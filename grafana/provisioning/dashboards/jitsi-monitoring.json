@@ -1,0 +1,223 @@
+{
+  "title": "Jitsi Meet Monitoring",
+  "uid": "jitsi-monitoring",
+  "version": 1,
+  "tags": ["jitsi", "prometheus"],
+  "timezone": "browser",
+  "editable": true,
+  "panels": [
+    {
+      "title": "Server CPU",
+      "type": "gauge",
+      "gridPos": {"h": 8, "w": 4, "x": 0, "y": 0},
+      "targets": [{"expr": "100 - (avg by (instance) (rate(node_cpu_seconds_total{mode=\"idle\"}[$__rate_interval])) * 100)", "legendFormat": "CPU"}],
+      "fieldConfig": {"defaults": {"unit": "percent", "min": 0, "max": 100, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "orange", "value": 80}, {"color": "red", "value": 95}]}}, "overrides": []}
+    },
+    {
+      "title": "Server Memory",
+      "type": "gauge",
+      "gridPos": {"h": 8, "w": 4, "x": 4, "y": 0},
+      "targets": [{"expr": "(1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100", "legendFormat": "RAM"}],
+      "fieldConfig": {"defaults": {"unit": "percent", "min": 0, "max": 100, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "orange", "value": 80}, {"color": "red", "value": 95}]}}, "overrides": []}
+    },
+    {
+      "title": "Server Load",
+      "type": "stat",
+      "gridPos": {"h": 8, "w": 4, "x": 8, "y": 0},
+      "targets": [{"expr": "node_load1", "legendFormat": "1m"}, {"expr": "node_load5", "legendFormat": "5m"}, {"expr": "node_load15", "legendFormat": "15m"}],
+      "fieldConfig": {"defaults": {"unit": "none"}}
+    },
+    {
+      "title": "Disk Usage",
+      "type": "gauge",
+      "gridPos": {"h": 8, "w": 4, "x": 12, "y": 0},
+      "targets": [{"expr": "(1 - (node_filesystem_avail_bytes{mountpoint=\"/\"} / node_filesystem_size_bytes{mountpoint=\"/\"})) * 100", "legendFormat": "Disk /"}],
+      "fieldConfig": {"defaults": {"unit": "percent", "min": 0, "max": 100, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "orange", "value": 80}, {"color": "red", "value": 95}]}}, "overrides": []}
+    },
+    {
+      "title": "Network Traffic",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 0},
+      "targets": [
+        {"expr": "rate(node_network_receive_bytes_total{device=\"eth0\"}[$__rate_interval])", "legendFormat": "RX"},
+        {"expr": "rate(node_network_transmit_bytes_total{device=\"eth0\"}[$__rate_interval])", "legendFormat": "TX"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "bps"}}
+    },
+    {
+      "title": "Active Conferences",
+      "type": "stat",
+      "gridPos": {"h": 6, "w": 4, "x": 0, "y": 8},
+      "targets": [{"expr": "jitsi_jvb_conferences", "legendFormat": "Conferences"}],
+      "fieldConfig": {"defaults": {"unit": "none", "color": {"mode": "palette-classic"}}}
+    },
+    {
+      "title": "Total Endpoints",
+      "type": "stat",
+      "gridPos": {"h": 6, "w": 4, "x": 4, "y": 8},
+      "targets": [{"expr": "jitsi_jvb_current_endpoints", "legendFormat": "Endpoints"}],
+      "fieldConfig": {"defaults": {"unit": "none"}}
+    },
+    {
+      "title": "Active Endpoints",
+      "type": "stat",
+      "gridPos": {"h": 6, "w": 4, "x": 8, "y": 8},
+      "targets": [{"expr": "jitsi_jvb_active_endpoints", "legendFormat": "Active"}],
+      "fieldConfig": {"defaults": {"unit": "none"}}
+    },
+    {
+      "title": "Largest Conference",
+      "type": "stat",
+      "gridPos": {"h": 6, "w": 4, "x": 12, "y": 8},
+      "targets": [{"expr": "jitsi_jvb_largest_conference", "legendFormat": "Largest"}],
+      "fieldConfig": {"defaults": {"unit": "none"}}
+    },
+    {
+      "title": "JVB Health",
+      "type": "stat",
+      "gridPos": {"h": 6, "w": 4, "x": 16, "y": 8},
+      "targets": [{"expr": "jitsi_jvb_healthy", "legendFormat": "Healthy"}],
+      "fieldConfig": {"defaults": {"unit": "none", "color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "green", "value": 1}]}}}
+    },
+    {
+      "title": "Conferences Created",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 14},
+      "targets": [{"expr": "rate(jitsi_jvb_conferences_created[$__rate_interval])", "legendFormat": "Created/min"}],
+      "fieldConfig": {"defaults": {"unit": "cpm"}}
+    },
+    {
+      "title": "Incoming Bitrate",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 14},
+      "targets": [{"expr": "jitsi_jvb_incoming_bitrate", "legendFormat": "Incoming"}],
+      "fieldConfig": {"defaults": {"unit": "bps"}}
+    },
+    {
+      "title": "Outgoing Bitrate",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 14},
+      "targets": [{"expr": "jitsi_jvb_outgoing_bitrate", "legendFormat": "Outgoing"}],
+      "fieldConfig": {"defaults": {"unit": "bps"}}
+    },
+    {
+      "title": "Endpoints Sending Audio",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 6, "x": 0, "y": 22},
+      "targets": [{"expr": "jitsi_jvb_endpoints_sending_audio", "legendFormat": "Audio"}],
+      "fieldConfig": {"defaults": {"unit": "none"}}
+    },
+    {
+      "title": "Endpoints Sending Video",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 6, "x": 6, "y": 22},
+      "targets": [{"expr": "jitsi_jvb_endpoints_sending_video", "legendFormat": "Video"}],
+      "fieldConfig": {"defaults": {"unit": "none"}}
+    },
+    {
+      "title": "Packet Loss Fraction",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 6, "x": 12, "y": 22},
+      "targets": [{"expr": "jitsi_jvb_loss_fraction", "legendFormat": "Loss"}],
+      "fieldConfig": {"defaults": {"unit": "percentunit"}}
+    },
+    {
+      "title": "JVB Stress",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 6, "x": 18, "y": 22},
+      "targets": [{"expr": "jitsi_jvb_stress", "legendFormat": "Stress"}],
+      "fieldConfig": {"defaults": {"unit": "none", "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "orange", "value": 0.7}, {"color": "red", "value": 0.9}]}}}
+    },
+    {
+      "title": "JVM Heap",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 6, "x": 0, "y": 30},
+      "targets": [
+        {"expr": "jitsi_jvb_jvm_heap_used", "legendFormat": "Used"},
+        {"expr": "jitsi_jvb_jvm_heap_committed", "legendFormat": "Committed"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "bytes"}}
+    },
+    {
+      "title": "Average RTT",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 6, "x": 6, "y": 30},
+      "targets": [{"expr": "jitsi_jvb_average_rtt", "legendFormat": "RTT"}],
+      "fieldConfig": {"defaults": {"unit": "s"}}
+    },
+    {
+      "title": "Open File Descriptors",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 6, "x": 12, "y": 30},
+      "targets": [{"expr": "jitsi_jvb_jvm_open_fd_count", "legendFormat": "FDs"}],
+      "fieldConfig": {"defaults": {"unit": "none"}}
+    },
+    {
+      "title": "Thread Count",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 6, "x": 18, "y": 30},
+      "targets": [{"expr": "jitsi_jvb_thread_count", "legendFormat": "Threads"}],
+      "fieldConfig": {"defaults": {"unit": "none"}}
+    },
+    {
+      "title": "Packet Rates",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 38},
+      "targets": [
+        {"expr": "jitsi_jvb_incoming_packet_rate", "legendFormat": "Incoming"},
+        {"expr": "jitsi_jvb_outgoing_packet_rate", "legendFormat": "Outgoing"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "pps"}}
+    },
+    {
+      "title": "Bytes Transferred",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 38},
+      "targets": [
+        {"expr": "rate(jitsi_jvb_bytes_received[$__rate_interval])", "legendFormat": "Received/s"},
+        {"expr": "rate(jitsi_jvb_bytes_sent[$__rate_interval])", "legendFormat": "Sent/s"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "Bps"}}
+    },
+    {
+      "title": "ICE Failures",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 38},
+      "targets": [
+        {"expr": "rate(jitsi_jvb_ice_failed[$__rate_interval])", "legendFormat": "ICE Failed"},
+        {"expr": "rate(jitsi_jvb_ice_succeeded[$__rate_interval])", "legendFormat": "ICE Succeeded"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "cps"}}
+    },
+    {
+      "title": "WebSocket Messages",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 46},
+      "targets": [
+        {"expr": "rate(jitsi_jvb_colibri_web_socket_messages_received[$__rate_interval])", "legendFormat": "Received"},
+        {"expr": "rate(jitsi_jvb_colibri_web_socket_messages_sent[$__rate_interval])", "legendFormat": "Sent"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "cps"}}
+    },
+    {
+      "title": "Endpoints by Type",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 46},
+      "targets": [
+        {"expr": "jitsi_jvb_local_endpoints", "legendFormat": "Local"},
+        {"expr": "jitsi_jvb_endpoints_relayed", "legendFormat": "Relayed"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "none"}}
+    },
+    {
+      "title": "Endpoint Errors",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 46},
+      "targets": [
+        {"expr": "rate(jitsi_jvb_endpoints_disconnected[$__rate_interval])", "legendFormat": "Disconnects"},
+        {"expr": "rate(jitsi_jvb_endpoints_ice_failed[$__rate_interval])", "legendFormat": "ICE Failed"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "cps"}}
+    }
+  ]
+}
