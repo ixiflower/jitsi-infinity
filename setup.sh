@@ -133,6 +133,9 @@ ENVEOF
   echo -e "\n${GREEN}=== Generating jibri pool ===${NC}"
   bash "${SCRIPT_DIR}/generate-jibri-pool.sh"
 
+  echo -e "\n${GREEN}=== Removing old containers ===${NC}"
+  docker compose -f docker-compose.yml -f jibri-pool.yml down --remove-orphans 2>/dev/null || true
+
   echo -e "\n${GREEN}=== Starting services ===${NC}"
   docker compose -f docker-compose.yml -f jibri-pool.yml up -d
   sleep 15
@@ -298,6 +301,50 @@ setup_monitoring() {
   read -rp "Press Enter..."
 }
 
+# ── Release ──
+do_release() {
+  local mode; mode=$(detect_mode)
+  if [ "$mode" = "none" ]; then echo -e "${RED}Configure Jitsi first (option 1).${NC}"; read -rp "Press Enter..."; return; fi
+
+  if [[ -n $(git status -s) ]]; then
+    echo -e "${RED}Git tree is not clean, aborting release!${NC}"; read -rp "Press Enter..."; return
+  fi
+
+  read -rp "Version (e.g. 1.0): " V
+  local RELEASE="${2:-stable}"
+  if [[ -z $V ]]; then echo -e "${RED}A version must be specified!${NC}"; read -rp "Press Enter..."; return; fi
+
+  local VERSION="${RELEASE}-${V}"
+  echo -e "\n${GREEN}Releasing ${VERSION}${NC}"
+
+  if git rev-parse "${VERSION}" >/dev/null 2>&1; then
+    echo -e "${RED}Tag already exists!${NC}"; read -rp "Press Enter..."; return
+  fi
+
+  local LAST_VERSION; LAST_VERSION=$(git describe --tags --abbrev=0)
+  local CHANGES; CHANGES=$(git log --oneline --no-decorate --no-merges ${LAST_VERSION}..HEAD --pretty=format:"%x2a%x20%h%x20%s")
+  echo -e "\n${YELLOW}Changelog:${NC}\n$CHANGES\n"
+
+  read -rp "Proceed with release? [y/N]: " ok
+  [[ ! "$ok" =~ ^[Yy] ]] && return
+
+  JITSI_BUILD=${VERSION} JITSI_RELEASE=${RELEASE} make release
+
+  echo -e "## ${VERSION}\n\nBased on ${RELEASE} release ${V}.\n\n${CHANGES}\n" > /tmp/jitsi-changelog.tmp
+  cat CHANGELOG.md >> /tmp/jitsi-changelog.tmp
+  mv /tmp/jitsi-changelog.tmp CHANGELOG.md
+
+  sed -i".bak" -e "s/unstable/${VERSION}/" *.yml
+  git commit -a -m "release: ${VERSION}" -m "${CHANGES}"
+  git tag -a "${VERSION}" -m "release" -m "${CHANGES}"
+  sed -i".bak" -e "s/${VERSION}/unstable/" *.yml
+  git commit -a -m "misc: working on unstable"
+  git push && git push --tags
+
+  echo -e "\n${GREEN}Release ${VERSION} complete!${NC}"
+  read -rp "Press Enter..."
+}
+
 # ── Main Menu ──
 main_menu() {
   while true; do
@@ -311,15 +358,17 @@ main_menu() {
     echo "  2) Setup Stress Test Client"
     echo "  3) Setup Monitoring (Grafana + Prometheus)"
     echo "  4) View All Running Containers"
-    echo "  5) Exit"
+    echo "  5) Release (tag & push)"
+    echo "  6) Exit"
     echo ""
-    read -rp "Choice [1/2/3/4/5]: " CHOICE
+    read -rp "Choice [1/2/3/4/5/6]: " CHOICE
     case "$CHOICE" in
       1) setup_jitsi ;;
       2) setup_stress_test ;;
       3) setup_monitoring ;;
-      4) echo ""; docker compose ps --format "table {{.Name}}\t{{.Status}}"; echo ""; read -rp "Press Enter..." ;;
-      5) echo "Goodbye."; exit 0 ;;
+      4) echo ""; docker compose ps --format '{{.Name}}' | while read -r cname; do ip=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$cname" 2>/dev/null); port=$(docker inspect -f '{{range $p, $c := .NetworkSettings.Ports}}{{$p}}{{end}}' "$cname" 2>/dev/null | cut -d'/' -f1 | head -1); if [ -n "$port" ]; then echo -e "  ${GREEN}${ip}:${port}${NC}  ${CYAN}${cname}${NC}"; else echo -e "  ${YELLOW}${ip}${NC}  ${CYAN}${cname}${NC}"; fi; done; echo ""; read -rp "Press Enter..." ;;
+      5) do_release ;;
+      6) echo "Goodbye."; exit 0 ;;
       *) echo -e "${RED}Invalid.${NC}"; sleep 1 ;;
     esac
   done
