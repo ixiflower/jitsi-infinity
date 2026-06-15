@@ -1,1 +1,5 @@
 .npm-cache/
+recordings/
+state/
+config/*/logs/
+

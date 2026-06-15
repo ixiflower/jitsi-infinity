@@ -27,6 +27,7 @@
 - [Quick Start](#-quick-start)
 - [Configuration](#-configuration)
 - [Auto-Scaler](#-auto-scaler--custom-v2)
+- [ArvanCloud Upload](#-arvancloud-vod-auto-upload)
 - [Persian Documentation](#-persian-documentation)
 - [Generating the Jibri Pool](#-generating-the-jibri-pool)
 - [Building Images](#-building-images)
@@ -154,6 +155,9 @@ docker compose -f docker-compose.yml -f jibri-pool.yml up -d
 | `ENABLE_LETSENCRYPT` | `0` | Use Let's Encrypt (1 for domain) |
 | `JIBRI_COUNT` | `3` | Number of jibri instances |
 | `JICOFO_ENABLE_REST` | `1` | Enable jicofo REST API |
+| `ARVAN_API_KEY` | — | ArvanCloud VOD API key for auto-upload |
+| `ARVAN_CHANNEL_ID` | — | Target ArvanCloud channel ID |
+| `ARVAN_VOD_BASE_URL` | `https://napi.arvancloud.ir/vod/2.0` | ArvanCloud VOD API base URL |
 
 ---
 
@@ -264,7 +268,84 @@ The official Jitsi autoscaler requires Kubernetes or Google Cloud. This custom s
 
 ---
 
-## 🇮🇷 Persian Documentation
+## ☁️ ArvanCloud VOD Auto-Upload
+
+```
+  ┌─────────────────────────────────────────────────────┐
+  │  Jibri finishes recording                           │
+  │  → writes .mp4 + metadata.json to ./recordings/<id>/│
+  └──────────────────────┬──────────────────────────────┘
+                         │
+                         ▼
+  ┌─────────────────────────────────────────────────────┐
+  │  arvancloud-upload container (alpine)                │
+  │  watches ./recordings/ every 60s                    │
+  │  detects new .mp4 + metadata.json                   │
+  └──────────────────────┬──────────────────────────────┘
+                         │
+          ┌──────────────┴──────────────┐
+          │ tus protocol upload         │
+          │                             │
+          │ 1. POST /channels/{id}/files│
+          │ 2. PATCH upload bytes       │
+          │ 3. POST /channels/{id}/videos│
+          └──────────────┬──────────────┘
+                         │
+                         ▼
+  ┌─────────────────────────────────────────────────────┐
+  │  ArvanCloud VOD Platform                            │
+  │  Video titled: "<room> YYYY/MM/DD HH:MM:SS"         │
+  │  Auto-converted to HLS + MP4 (multi-res)            │
+  └─────────────────────────────────────────────────────┘
+```
+
+### How It Works
+
+After Jibri finishes recording, the `arvancloud-upload` container automatically:
+1. Detects the completed recording (`.mp4` + `metadata.json`)
+2. Extracts the room name from `metadata.json` and file modification time
+3. Uploads the video to ArvanCloud VOD using the [tus resumable upload protocol](https://tus.io)
+4. Creates a video entry in your configured channel with title `<room> YYYY/MM/DD HH:MM:SS`
+5. Writes a state marker to `./state/uploaded/<uuid>` — never re-uploads
+
+### Configuration
+
+Add these to `.env`:
+
+```bash
+# ArvanCloud VOD auto-upload
+ARVAN_API_KEY="apikey <your-api-key>"
+ARVAN_CHANNEL_ID=<your-channel-id>
+ARVAN_VOD_BASE_URL=https://napi.arvancloud.ir/vod/2.0
+```
+
+### Requirements
+
+- An [ArvanCloud](https://arvancloud.ir) account with VOD service enabled
+- A VOD channel created (you can create one via [API](https://napi.arvancloud.ir/vod/2.0/channels) or ArvanCloud panel)
+- API key from ArvanCloud panel → Machine User → Create access key
+
+### Files
+
+| File | Description |
+|------|-------------|
+| `scripts/arvancloud-upload.sh` | Uploads one recording via tus protocol |
+| `scripts/watch-recordings.sh` | Watcher loop (entrypoint of container) |
+| `scripts/upload.Dockerfile` | Docker image (alpine + curl + jq + bash) |
+| `docker-compose.yml` | `arvancloud-upload` service definition |
+| `state/uploaded/` | Upload tracking markers |
+
+### Manual Upload
+
+```bash
+# Upload a specific recording by session UUID
+docker compose exec arvancloud-upload bash /usr/local/bin/arvancloud-upload.sh <session-uuid>
+
+# Check upload logs
+docker compose logs arvancloud-upload
+```
+
+---
 
 <h3 dir="rtl" align="right">نحوه عملکرد اسکیلر خودکار</h3>
 
@@ -392,6 +473,12 @@ services/
 ├── 📁 grafana/                    # Grafana provisioning
 ├── 📁 prometheus/                 # Prometheus config
 ├── 📁 log-analyser/               # Loki + OTEL config
+├── 📁 scripts/                    # Utility scripts
+│   ├── 📄 arvancloud-upload.sh    # ArvanCloud VOD upload
+│   ├── 📄 watch-recordings.sh     # Recording watcher daemon
+│   └── 📄 upload.Dockerfile       # Dockerfile for upload container
+├── 📁 state/                      # Runtime state
+│   └── 📁 uploaded/               # Upload tracking markers
 ├── 📁 rtcstats/                   # WebRTC stats
 │
 ├── 📁 recordings/                 # Recordings storage
