@@ -632,6 +632,24 @@ services:
         networks:
             meet.jitsi:
 
+    # ArvanCloud VOD auto-upload for recordings
+    arvancloud-upload:
+        container_name: jitsi-arvancloud-upload
+        build:
+            context: .
+            dockerfile: scripts/upload.Dockerfile
+        restart: ${RESTART_POLICY:-unless-stopped}
+        volumes:
+            - ./recordings:/recordings:Z
+            - ./state/uploaded:/state:Z
+        environment:
+            - ARVAN_API_KEY=${ARVAN_API_KEY}
+            - ARVAN_CHANNEL_ID=${ARVAN_CHANNEL_ID}
+            - ARVAN_VOD_BASE_URL=${ARVAN_VOD_BASE_URL}
+            - WATCH_INTERVAL=60
+        networks:
+            meet.jitsi:
+
 volumes:
     portainer_data:
     grafana_data:
