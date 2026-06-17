@@ -1,7 +1,7 @@
 {
   "title": "Jitsi Meet Monitoring",
   "uid": "jitsi-monitoring",
-  "version": 4,
+  "version": 5,
   "tags": [
     "jitsi",
     "prometheus"
@@ -538,6 +538,81 @@
       "fieldConfig": {
         "defaults": {
           "unit": "none"
+        }
+      }
+    },
+    {
+      "title": "Packet Rates",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 38
+      },
+      "targets": [
+        {
+          "expr": "jitsi_jvb_incoming_packet_rate",
+          "legendFormat": "Incoming"
+        },
+        {
+          "expr": "jitsi_jvb_outgoing_packet_rate",
+          "legendFormat": "Outgoing"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "pps"
+        }
+      }
+    },
+    {
+      "title": "Bytes Transferred",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 38
+      },
+      "targets": [
+        {
+          "expr": "rate(jitsi_jvb_bytes_received[$__rate_interval])",
+          "legendFormat": "Received/s"
+        },
+        {
+          "expr": "rate(jitsi_jvb_bytes_sent[$__rate_interval])",
+          "legendFormat": "Sent/s"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "Bps"
+        }
+      }
+    },
+    {
+      "title": "ICE Failures",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 38
+      },
+      "targets": [
+        {
+          "expr": "rate(jitsi_jvb_ice_failed[$__rate_interval])",
+          "legendFormat": "ICE Failed"
+        },
+        {
+          "expr": "rate(jitsi_jvb_ice_succeeded[$__rate_interval])",
+          "legendFormat": "ICE Succeeded"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "cps"
         }
       }
     }
