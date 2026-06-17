@@ -166,8 +166,8 @@
       "type": "timeseries",
       "gridPos": {
         "x": 0,
-        "y": 16,
-        "w": 12,
+        "y": 40,
+        "w": 24,
         "h": 8
       },
       "targets": [
@@ -237,7 +237,7 @@
       "gridPos": {
         "x": 0,
         "y": 8,
-        "w": 4,
+        "w": 6,
         "h": 8
       },
       "targets": [
@@ -256,9 +256,9 @@
       "title": "Largest Conference",
       "type": "stat",
       "gridPos": {
-        "x": 4,
+        "x": 6,
         "y": 8,
-        "w": 4,
+        "w": 6,
         "h": 8
       },
       "targets": [
@@ -277,9 +277,9 @@
       "title": "JVB Health",
       "type": "stat",
       "gridPos": {
-        "x": 8,
+        "x": 12,
         "y": 8,
-        "w": 4,
+        "w": 6,
         "h": 8
       },
       "targets": [
@@ -314,8 +314,8 @@
       "title": "Incoming Bitrate",
       "type": "timeseries",
       "gridPos": {
-        "x": 12,
-        "y": 16,
+        "x": 18,
+        "y": 8,
         "w": 6,
         "h": 8
       },
@@ -335,7 +335,7 @@
       "title": "Outgoing Bitrate",
       "type": "timeseries",
       "gridPos": {
-        "x": 18,
+        "x": 0,
         "y": 16,
         "w": 6,
         "h": 8
@@ -356,8 +356,8 @@
       "title": "Endpoints Sending Audio",
       "type": "timeseries",
       "gridPos": {
-        "x": 0,
-        "y": 24,
+        "x": 6,
+        "y": 16,
         "w": 6,
         "h": 8
       },
@@ -377,8 +377,8 @@
       "title": "Endpoints Sending Video",
       "type": "timeseries",
       "gridPos": {
-        "x": 6,
-        "y": 24,
+        "x": 12,
+        "y": 16,
         "w": 6,
         "h": 8
       },
@@ -398,8 +398,8 @@
       "title": "Packet Loss Fraction",
       "type": "timeseries",
       "gridPos": {
-        "x": 12,
-        "y": 24,
+        "x": 18,
+        "y": 16,
         "w": 6,
         "h": 8
       },
@@ -419,7 +419,7 @@
       "title": "JVB Stress",
       "type": "timeseries",
       "gridPos": {
-        "x": 18,
+        "x": 0,
         "y": 24,
         "w": 6,
         "h": 8
@@ -457,8 +457,8 @@
       "title": "JVM Heap",
       "type": "timeseries",
       "gridPos": {
-        "x": 0,
-        "y": 32,
+        "x": 6,
+        "y": 24,
         "w": 6,
         "h": 8
       },
@@ -482,8 +482,8 @@
       "title": "Average RTT",
       "type": "timeseries",
       "gridPos": {
-        "x": 6,
-        "y": 32,
+        "x": 12,
+        "y": 24,
         "w": 6,
         "h": 8
       },
@@ -503,8 +503,8 @@
       "title": "Open File Descriptors",
       "type": "timeseries",
       "gridPos": {
-        "x": 12,
-        "y": 32,
+        "x": 18,
+        "y": 24,
         "w": 6,
         "h": 8
       },
@@ -524,7 +524,7 @@
       "title": "Thread Count",
       "type": "timeseries",
       "gridPos": {
-        "x": 18,
+        "x": 0,
         "y": 32,
         "w": 6,
         "h": 8
@@ -545,9 +545,9 @@
       "title": "Packet Rates",
       "type": "timeseries",
       "gridPos": {
-        "x": 0,
-        "y": 40,
-        "w": 8,
+        "x": 6,
+        "y": 32,
+        "w": 6,
         "h": 8
       },
       "targets": [
@@ -570,9 +570,9 @@
       "title": "Endpoints by Type",
       "type": "timeseries",
       "gridPos": {
-        "x": 8,
-        "y": 48,
-        "w": 8,
+        "x": 12,
+        "y": 32,
+        "w": 6,
         "h": 8
       },
       "targets": [
