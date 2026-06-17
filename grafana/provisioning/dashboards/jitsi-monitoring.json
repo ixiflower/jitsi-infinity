@@ -1,7 +1,7 @@
 {
   "title": "Jitsi Meet Monitoring",
   "uid": "jitsi-monitoring",
-  "version": 5,
+  "version": 6,
   "tags": [
     "jitsi",
     "prometheus"
@@ -608,6 +608,81 @@
         {
           "expr": "rate(jitsi_jvb_ice_succeeded[$__rate_interval])",
           "legendFormat": "ICE Succeeded"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "cps"
+        }
+      }
+    },
+    {
+      "title": "WebSocket Messages",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 46
+      },
+      "targets": [
+        {
+          "expr": "rate(jitsi_jvb_colibri_web_socket_messages_received[$__rate_interval])",
+          "legendFormat": "Received"
+        },
+        {
+          "expr": "rate(jitsi_jvb_colibri_web_socket_messages_sent[$__rate_interval])",
+          "legendFormat": "Sent"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "cps"
+        }
+      }
+    },
+    {
+      "title": "Endpoints by Type",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 46
+      },
+      "targets": [
+        {
+          "expr": "jitsi_jvb_local_endpoints",
+          "legendFormat": "Local"
+        },
+        {
+          "expr": "jitsi_jvb_endpoints_relayed",
+          "legendFormat": "Relayed"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none"
+        }
+      }
+    },
+    {
+      "title": "Endpoint Errors",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 46
+      },
+      "targets": [
+        {
+          "expr": "rate(jitsi_jvb_endpoints_disconnected[$__rate_interval])",
+          "legendFormat": "Disconnects"
+        },
+        {
+          "expr": "rate(jitsi_jvb_endpoints_ice_failed[$__rate_interval])",
+          "legendFormat": "ICE Failed"
         }
       ],
       "fieldConfig": {
