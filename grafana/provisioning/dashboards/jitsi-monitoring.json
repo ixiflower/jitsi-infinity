@@ -193,7 +193,7 @@
         "x": 0,
         "y": 8,
         "w": 6,
-        "h": 6
+        "h": 8
       },
       "targets": [
         {
@@ -217,7 +217,7 @@
         "x": 6,
         "y": 8,
         "w": 6,
-        "h": 6
+        "h": 8
       },
       "targets": [
         {
@@ -238,7 +238,7 @@
         "x": 12,
         "y": 8,
         "w": 6,
-        "h": 6
+        "h": 8
       },
       "targets": [
         {
@@ -259,7 +259,7 @@
         "x": 18,
         "y": 8,
         "w": 6,
-        "h": 6
+        "h": 8
       },
       "targets": [
         {
@@ -278,9 +278,9 @@
       "type": "stat",
       "gridPos": {
         "x": 0,
-        "y": 14,
+        "y": 16,
         "w": 6,
-        "h": 6
+        "h": 8
       },
       "targets": [
         {
@@ -315,7 +315,7 @@
       "type": "timeseries",
       "gridPos": {
         "x": 6,
-        "y": 14,
+        "y": 16,
         "w": 6,
         "h": 8
       },
@@ -336,7 +336,7 @@
       "type": "timeseries",
       "gridPos": {
         "x": 12,
-        "y": 14,
+        "y": 16,
         "w": 6,
         "h": 8
       },
@@ -357,7 +357,7 @@
       "type": "timeseries",
       "gridPos": {
         "x": 18,
-        "y": 14,
+        "y": 16,
         "w": 6,
         "h": 8
       },
@@ -378,7 +378,7 @@
       "type": "timeseries",
       "gridPos": {
         "x": 0,
-        "y": 22,
+        "y": 24,
         "w": 6,
         "h": 8
       },
@@ -399,7 +399,7 @@
       "type": "timeseries",
       "gridPos": {
         "x": 6,
-        "y": 22,
+        "y": 24,
         "w": 6,
         "h": 8
       },
@@ -420,7 +420,7 @@
       "type": "timeseries",
       "gridPos": {
         "x": 12,
-        "y": 22,
+        "y": 24,
         "w": 6,
         "h": 8
       },
@@ -458,8 +458,8 @@
       "type": "timeseries",
       "gridPos": {
         "x": 0,
-        "y": 30,
-        "w": 6,
+        "y": 32,
+        "w": 8,
         "h": 8
       },
       "targets": [
@@ -483,7 +483,7 @@
       "type": "timeseries",
       "gridPos": {
         "x": 18,
-        "y": 22,
+        "y": 24,
         "w": 6,
         "h": 8
       },
@@ -503,9 +503,9 @@
       "title": "Open File Descriptors",
       "type": "timeseries",
       "gridPos": {
-        "x": 6,
-        "y": 30,
-        "w": 6,
+        "x": 8,
+        "y": 32,
+        "w": 8,
         "h": 8
       },
       "targets": [
@@ -524,9 +524,9 @@
       "title": "Thread Count",
       "type": "timeseries",
       "gridPos": {
-        "x": 12,
-        "y": 30,
-        "w": 6,
+        "x": 16,
+        "y": 32,
+        "w": 8,
         "h": 8
       },
       "targets": [
@@ -546,7 +546,7 @@
       "type": "timeseries",
       "gridPos": {
         "x": 0,
-        "y": 38,
+        "y": 40,
         "w": 8,
         "h": 8
       },
@@ -571,7 +571,7 @@
       "type": "timeseries",
       "gridPos": {
         "x": 8,
-        "y": 38,
+        "y": 40,
         "w": 8,
         "h": 8
       },
@@ -596,7 +596,7 @@
       "type": "timeseries",
       "gridPos": {
         "x": 16,
-        "y": 38,
+        "y": 40,
         "w": 8,
         "h": 8
       },
@@ -621,7 +621,7 @@
       "type": "timeseries",
       "gridPos": {
         "x": 0,
-        "y": 46,
+        "y": 48,
         "w": 8,
         "h": 8
       },
@@ -646,7 +646,7 @@
       "type": "timeseries",
       "gridPos": {
         "x": 8,
-        "y": 46,
+        "y": 48,
         "w": 8,
         "h": 8
       },
@@ -671,7 +671,7 @@
       "type": "timeseries",
       "gridPos": {
         "x": 16,
-        "y": 46,
+        "y": 48,
         "w": 8,
         "h": 8
       },
