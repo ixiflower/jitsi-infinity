@@ -1,25 +1,27 @@
 #!/bin/bash
-echo ""
-echo "██╗██╗████████╗███████╗██╗    ███╗   ███╗███████╗███████╗████████╗"
-echo "     ██║██║╚══██╔══╝██╔════╝██║    ████╗ ████║██╔════╝██╔════╝╚══██╔══╝"
-echo "     ██║██║   ██║   ███████╗██║    ██╔████╔██║█████╗  █████╗     ██║"
-echo "██   ██║██║   ██║   ╚════██║██║    ██║╚██╔╝██║██╔══╝  ██╔══╝     ██║"
-echo "╚█████╔╝██║   ██║   ███████║██║    ██║ ╚═╝ ██║███████╗███████╗   ██║"
-echo " ╚════╝ ╚═╝   ╚═╝   ╚══════╝╚═╝    ╚═╝     ╚═╝╚══════╝╚══════╝   ╚═╝"
-echo ""
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
 
-RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; NC='\033[0m'
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
+NC='\033[0m'
 
 # ── Detect existing setup mode ──
 detect_mode() {
-  if [ ! -f .env ]; then echo "none"; return; fi
-  local url; url=$(grep -E "^PUBLIC_URL=" .env 2>/dev/null | cut -d= -f2-)
-  if echo "$url" | grep -qi "localhost"; then echo "localhost"
-  elif [ -n "$url" ]; then echo "server"
+  if [ ! -f .env ]; then
+    echo "none"
+    return
+  fi
+  local url
+  url=$(grep -E "^PUBLIC_URL=" .env 2>/dev/null | cut -d= -f2-)
+  if echo "$url" | grep -qi "localhost"; then
+    echo "localhost"
+  elif [ -n "$url" ]; then
+    echo "server"
   else echo "none"; fi
 }
 
@@ -28,20 +30,50 @@ get_cfg() { grep -E "^CONFIG=" .env 2>/dev/null | cut -d= -f2-; }
 
 # ── Show status ──
 show_status() {
-  local mode; mode=$(detect_mode)
+  local mode
+  mode=$(detect_mode)
   echo -e "\n${CYAN}── Jitsi Status ──${NC}"
-  if [ "$mode" = "none" ]; then echo -e "  Mode: ${YELLOW}Not configured${NC}"
+  if [ "$mode" = "none" ]; then
+    echo -e "  Mode: ${YELLOW}Not configured${NC}"
   else
-    local url; url=$(get_url)
-    local mon; mon=$(docker ps --filter "name=prometheus" --format "{{.Names}}" 2>/dev/null)
-    local loadtest; loadtest=$(grep -E "^ENABLE_LOAD_TEST_CLIENT=" .env 2>/dev/null | cut -d= -f2-)
-    echo -e "  Mode:    ${GREEN}${mode}${NC}"
-    echo -e "  URL:     ${CYAN}${url}${NC}"
-    [ "$loadtest" = "1" ] && echo -e "  Load Test: ${GREEN}enabled${NC}" || echo -e "  Load Test: ${YELLOW}disabled${NC}"
-    [ -n "$mon" ] && echo -e "  Monitoring: ${GREEN}active${NC}" || echo -e "  Monitoring: ${YELLOW}inactive${NC}"
+    local url
+    url=$(get_url)
+    local mon
+    mon=$(docker ps --filter "name=prometheus" --format "{{.Names}}" 2>/dev/null)
+    local loadtest
+    loadtest=$(grep -E "^ENABLE_LOAD_TEST_CLIENT=" .env 2>/dev/null | cut -d= -f2-)
+    local base
+    base=$(echo "$url" | sed 's|:[0-9]*$||')
+    local port
+    port=$(echo "$url" | sed 's|.*:||')
+    local grafana_port
+    grafana_port=$(grep -E "^GRAFANA_PORT=" .env 2>/dev/null | cut -d= -f2-)
+    grafana_port="${grafana_port:-3000}"
+    local portainer_port
+    portainer_port=$(grep -E "^PORTAINER_PORT=" .env 2>/dev/null | cut -d= -f2-)
+    portainer_port="${portainer_port:-9000}"
+    local jitsi_up
+    jitsi_up=$(docker ps --filter "name=jitsi-web" --format "{{.Names}}" 2>/dev/null)
+    local grafana_up
+    grafana_up=$(docker ps --filter "name=grafana" --format "{{.Names}}" 2>/dev/null)
+    local portainer_up
+    portainer_up=$(docker ps --filter "name=portainer" --format "{{.Names}}" 2>/dev/null)
+    echo -e "  Mode:     ${GREEN}${mode}${NC}"
+    echo ""
+    echo -e "  ${CYAN}── Services ──${NC}"
+    echo -e "  $( [ -n "$jitsi_up" ] && echo -e "${GREEN}✓${NC}" || echo -e "${RED}✗${NC}" ) Jitsi:    ${CYAN}${url}${NC}"
+    echo -e "  $( [ -n "$grafana_up" ] && echo -e "${GREEN}✓${NC}" || echo -e "${RED}✗${NC}" ) Grafana:  ${CYAN}${base}:${grafana_port}${NC}"
+    echo -e "  $( [ -n "$portainer_up" ] && echo -e "${GREEN}✓${NC}" || echo -e "${RED}✗${NC}" ) Portainer: ${CYAN}${base}:${portainer_port}${NC}"
+    echo ""
+    echo -e "  ${CYAN}── Status ──${NC}"
+    [ "$loadtest" = "1" ] && echo -e "  Load Test: ${GREEN}enabled${NC}" || echo -e "  Load Test:   ${YELLOW}disabled${NC}"
+    [ -n "$mon" ] && echo -e "  Monitoring: ${GREEN}active${NC}" || echo -e "  Monitoring:  ${YELLOW}inactive${NC}"
   fi
-  local running; running=$(docker ps --filter "name=jitsi-" --format "{{.Names}}" 2>/dev/null | head -5)
-  if [ -n "$running" ]; then echo -e "  Services: ${GREEN}running${NC}"; echo "$running" | sed 's/^/    - /'
+  local running
+  running=$(docker ps --filter "name=jitsi-" --format "{{.Names}}" 2>/dev/null | head -5)
+  if [ -n "$running" ]; then
+    echo -e "  Services: ${GREEN}running${NC}"
+    echo "$running" | sed 's/^/    - /'
   else echo -e "  Services: ${YELLOW}not running${NC}"; fi
   echo ""
 }
@@ -49,12 +81,30 @@ show_status() {
 install_docker() {
   echo -e "${YELLOW}Docker not found.${NC}"
   echo "Select your distro to install Docker:"
-  echo "  1) Debian / Ubuntu (apt)"; echo "  2) Arch Linux (pacman)"; echo "  3) Skip"
+  echo "  1) Debian / Ubuntu (apt)"
+  echo "  2) Arch Linux (pacman)"
+  echo "  3) Skip"
   read -rp "Choice [1/2/3]: " c
   case "$c" in
-    1) sudo apt update; sudo apt install -y docker.io docker-compose-v2 openssl; sudo systemctl enable --now docker; sudo usermod -aG docker "$USER"; echo -e "${YELLOW}Log out and back in, then re-run.${NC}"; exit 0 ;;
-    2) sudo pacman -S --noconfirm docker docker-compose openssl; sudo systemctl enable --now docker; sudo usermod -aG docker "$USER"; echo -e "${YELLOW}Log out and back in, then re-run.${NC}"; exit 0 ;;
-    *) echo -e "${RED}Docker is required.${NC}"; exit 1 ;;
+  1)
+    sudo apt update
+    sudo apt install -y docker.io docker-compose-v2 openssl
+    sudo systemctl enable --now docker
+    sudo usermod -aG docker "$USER"
+    echo -e "${YELLOW}Log out and back in, then re-run.${NC}"
+    exit 0
+    ;;
+  2)
+    sudo pacman -S --noconfirm docker docker-compose openssl
+    sudo systemctl enable --now docker
+    sudo usermod -aG docker "$USER"
+    echo -e "${YELLOW}Log out and back in, then re-run.${NC}"
+    exit 0
+    ;;
+  *)
+    echo -e "${RED}Docker is required.${NC}"
+    exit 1
+    ;;
   esac
 }
 
@@ -65,7 +115,7 @@ generate_jibri_pool() {
   local output="${SCRIPT_DIR}/jibri-pool.yml"
   mkdir -p "$SCRIPT_DIR/recordings"
 
-  cat > "$output" <<EOF
+  cat >"$output" <<EOF
 # Auto-generated by setup.sh
 # JIBRI_COUNT=${count}
 # Regenerate: run option 1 from setup.sh
@@ -76,7 +126,7 @@ EOF
   for i in $(seq 1 "$count"); do
     local cfg_dir="${CONFIG}/jibri-${i}"
     mkdir -p "$cfg_dir" 2>/dev/null || true
-    cat >> "$output" <<EOS
+    cat >>"$output" <<EOS
   jibri-${i}:
     image: jitsi/jibri:\${JITSI_IMAGE_VERSION:-unstable}
     restart: \${RESTART_POLICY:-unless-stopped}
@@ -103,47 +153,76 @@ EOS
 
 # ── Setup Jitsi ──
 setup_jitsi() {
-  local mode; mode=$(detect_mode)
+  local mode
+  mode=$(detect_mode)
   if [ "$mode" != "none" ]; then
     echo -e "${YELLOW}Already configured ($mode).${NC}"
-    read -rp "Reconfigure? Overwrite .env [y/N]: " ok; [[ ! "$ok" =~ ^[Yy] ]] && return
+    read -rp "Reconfigure? Overwrite .env [y/N]: " ok
+    [[ ! "$ok" =~ ^[Yy] ]] && return
   fi
 
   CONFIG_DIR="${CONFIG:-/home/ubuntu/.jitsi-meet-cfg}"
   mkdir -p "$CONFIG_DIR"/{web/prosody/config,jicofo,jvb,jibri,transcripts}
 
-  echo "Select mode:"; echo "  1) localhost"; echo "  2) server"
+  echo "Select mode:"
+  echo "  1) localhost"
+  echo "  2) server"
   read -rp "Choice [1/2]: " MODE
   mkdir -p "$SCRIPT_DIR/recordings"
 
   if [ "$MODE" = "1" ] || [ "$MODE" = "localhost" ]; then
     echo -e "\n${GREEN}=== LOCALHOST ===${NC}"
-    SERVER_IP="localhost"; HTTP_PORT=8000; HTTPS_PORT=8443
-    PUBLIC_URL="https://localhost:${HTTPS_PORT}"; JVB_ADVERTISE_IPS=""
-    ENABLE_LETSENCRYPT=0; LETSENCRYPT_DOMAIN=""; LETSENCRYPT_EMAIL=""
-    ENABLE_XMPP_WEBSOCKET=0; BOSH_RELATIVE=1; ENABLE_HTTP_REDIRECT=0
+    SERVER_IP="localhost"
+    HTTP_PORT=8000
+    HTTPS_PORT=8443
+    PUBLIC_URL="https://localhost:${HTTPS_PORT}"
+    JVB_ADVERTISE_IPS=""
+    ENABLE_LETSENCRYPT=0
+    LETSENCRYPT_DOMAIN=""
+    LETSENCRYPT_EMAIL=""
+    ENABLE_XMPP_WEBSOCKET=0
+    BOSH_RELATIVE=1
+    ENABLE_HTTP_REDIRECT=0
   elif [ "$MODE" = "2" ] || [ "$MODE" = "server" ]; then
     echo -e "\n${GREEN}=== SERVER ===${NC}"
     DETECTED_IP=$(ip route get 1 | awk '{print $7; exit}' 2>/dev/null || echo "")
     if [ -n "$DETECTED_IP" ]; then
-      echo -e "Detected IP: ${YELLOW}$DETECTED_IP${NC}"; read -rp "Use this? [Y/n]: " ok
+      echo -e "Detected IP: ${YELLOW}$DETECTED_IP${NC}"
+      read -rp "Use this? [Y/n]: " ok
       if [[ "$ok" =~ ^[Nn] ]]; then read -rp "Enter IP or domain: " SERVER_IP; else SERVER_IP="$DETECTED_IP"; fi
     else read -rp "Enter IP or domain: " SERVER_IP; fi
 
     if [[ "$SERVER_IP" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-      echo -e "${YELLOW}Using IP (self-signed cert)${NC}"; HTTP_PORT=8000; HTTPS_PORT=8443
-      PUBLIC_URL="https://${SERVER_IP}:${HTTPS_PORT}"; JVB_ADVERTISE_IPS="$SERVER_IP"
-      ENABLE_LETSENCRYPT=0; LETSENCRYPT_DOMAIN=""; LETSENCRYPT_EMAIL=""; ENABLE_HTTP_REDIRECT=0
+      echo -e "${YELLOW}Using IP (self-signed cert)${NC}"
+      HTTP_PORT=8000
+      HTTPS_PORT=8443
+      PUBLIC_URL="https://${SERVER_IP}:${HTTPS_PORT}"
+      JVB_ADVERTISE_IPS="$SERVER_IP"
+      ENABLE_LETSENCRYPT=0
+      LETSENCRYPT_DOMAIN=""
+      LETSENCRYPT_EMAIL=""
+      ENABLE_HTTP_REDIRECT=0
     else
-      echo -e "${YELLOW}Using domain: $SERVER_IP${NC}"; read -rp "Email for Let's Encrypt: " LETSENCRYPT_EMAIL
-      HTTP_PORT=80; HTTPS_PORT=443; PUBLIC_URL="https://${SERVER_IP}"; JVB_ADVERTISE_IPS=""
-      ENABLE_LETSENCRYPT=1; LETSENCRYPT_DOMAIN="$SERVER_IP"; ENABLE_HTTP_REDIRECT=1
+      echo -e "${YELLOW}Using domain: $SERVER_IP${NC}"
+      read -rp "Email for Let's Encrypt: " LETSENCRYPT_EMAIL
+      HTTP_PORT=80
+      HTTPS_PORT=443
+      PUBLIC_URL="https://${SERVER_IP}"
+      JVB_ADVERTISE_IPS=""
+      ENABLE_LETSENCRYPT=1
+      LETSENCRYPT_DOMAIN="$SERVER_IP"
+      ENABLE_HTTP_REDIRECT=1
     fi
-    ENABLE_XMPP_WEBSOCKET=1; BOSH_RELATIVE=1
-  else echo -e "${RED}Invalid choice.${NC}"; return; fi
+    ENABLE_XMPP_WEBSOCKET=1
+    BOSH_RELATIVE=1
+  else
+    echo -e "${RED}Invalid choice.${NC}"
+    return
+  fi
 
   PASSWORDS_SOURCE=""
-  if [ -f .env ] && grep -q "JICOFO_AUTH_PASSWORD" .env 2>/dev/null; then PASSWORDS_SOURCE=".env"
+  if [ -f .env ] && grep -q "JICOFO_AUTH_PASSWORD" .env 2>/dev/null; then
+    PASSWORDS_SOURCE=".env"
   else
     echo -e "\n${GREEN}=== Generating passwords ===${NC}"
     PASSWORDS_SOURCE="/tmp/jitsi-passwords.tmp"
@@ -213,24 +292,42 @@ ENVEOF
 
 # ── Setup Stress Test ──
 setup_stress_test() {
-  local mode; mode=$(detect_mode)
-  if [ "$mode" = "none" ]; then echo -e "${RED}Configure Jitsi first (option 1).${NC}"; read -rp "Press Enter..."; return; fi
+  local mode
+  mode=$(detect_mode)
+  if [ "$mode" = "none" ]; then
+    echo -e "${RED}Configure Jitsi first (option 1).${NC}"
+    read -rp "Press Enter..."
+    return
+  fi
 
-  local url; url=$(get_url)
+  local url
+  url=$(get_url)
+
+  local current
+  current=$(grep -E "^ENABLE_LOAD_TEST_CLIENT=" .env 2>/dev/null | cut -d= -f2-)
+
   echo -e "\n${GREEN}==============================${NC}"
-  echo -e "${GREEN}  Stress Test Setup${NC}"
+  echo -e "${GREEN}  Stress Test Client${NC}"
   echo -e "${GREEN}==============================${NC}\n"
   echo -e "  Mode: ${CYAN}${mode}${NC} — ${url}\n"
+  echo -e "  Current: [$([ "$current" = "1" ] && echo -e "${GREEN}ON${NC}" || echo -e "${RED}OFF${NC}")]\n"
+  echo "  1) Turn ON  — enable stress test (disables prejoin page)"
+  echo "  2) Turn OFF — disable stress test"
+  echo "  3) Back"
+  echo ""
+  read -rp "Choice [1/2/3]: " toggle
 
-  local current; current=$(grep -E "^ENABLE_LOAD_TEST_CLIENT=" .env 2>/dev/null | cut -d= -f2-)
-  [ "$current" = "1" ] && echo -e "${YELLOW}Already enabled.${NC}"
+  case "$toggle" in
+  1)
+    grep -q "^ENABLE_LOAD_TEST_CLIENT=" .env 2>/dev/null && sed -i 's/^ENABLE_LOAD_TEST_CLIENT=.*/ENABLE_LOAD_TEST_CLIENT=1/' .env || echo "ENABLE_LOAD_TEST_CLIENT=1" >>.env
+    grep -q "^ENABLE_PREJOIN_PAGE=" .env 2>/dev/null && sed -i 's/^ENABLE_PREJOIN_PAGE=.*/ENABLE_PREJOIN_PAGE=0/' .env || echo "ENABLE_PREJOIN_PAGE=0" >>.env
 
-  grep -q "^ENABLE_LOAD_TEST_CLIENT=" .env 2>/dev/null && sed -i 's/^ENABLE_LOAD_TEST_CLIENT=.*/ENABLE_LOAD_TEST_CLIENT=1/' .env || echo "ENABLE_LOAD_TEST_CLIENT=1" >> .env
+    local cfg_dir
+    cfg_dir=$(get_cfg)
+    cfg_dir="${cfg_dir:-/home/ubuntu/.jitsi-meet-cfg}"
 
-  local cfg_dir; cfg_dir=$(get_cfg); cfg_dir="${cfg_dir:-/home/ubuntu/.jitsi-meet-cfg}"
-
-  echo -e "\n${GREEN}=== Creating load test page ===${NC}"
-  docker run --rm -v "${cfg_dir}/web/load-test:/load-test" alpine sh -c 'cat > /load-test/index.html << "EOF"
+    echo -e "\n${GREEN}=== Creating load test page ===${NC}"
+    docker run --rm -v "${cfg_dir}/web/load-test:/load-test" alpine sh -c 'cat > /load-test/index.html << "EOF"
 <!DOCTYPE html>
 <html>
 <head>
@@ -285,99 +382,150 @@ var r=pr(),p=gp();if(r){document.getElementById("roomInput").value=r;document.ge
 </body>
 </html>
 EOF'
-  echo -e "${GREEN}Load test page created.${NC}"
+    echo -e "${GREEN}Load test page created.${NC}"
 
-  echo -e "\n${GREEN}=== Restarting web container ===${NC}"
-  docker compose up -d --force-recreate web 2>/dev/null | tail -1
-  sleep 3
+    echo -e "\n${GREEN}=== Restarting web container ===${NC}"
+    docker compose up -d --force-recreate web 2>/dev/null | tail -1
+    sleep 3
 
-  echo -e "\n${GREEN}==============================${NC}"
-  echo -e "${GREEN}  Stress Test Ready!${NC}"
-  echo -e "${GREEN}==============================${NC}"
-  echo ""
-  echo -e "  Open in your browser:"
-  echo -e "  ${CYAN}${url}/_load-test/<room>?count=<num>${NC}"
-  echo ""
-  echo -e "  Examples:"
-  echo -e "  • 10 participants in 'test':"
-  echo -e "    ${url}/_load-test/test?count=10"
-  echo -e ""
-  echo -e "  • 50 participants in 'ixi' with 2s delay:"
-  echo -e "    ${url}/_load-test/ixi?count=50&delay=2"
-  echo ""
+    echo -e "\n${GREEN}==============================${NC}"
+    echo -e "${GREEN}  Stress Test Enabled!${NC}"
+    echo -e "${GREEN}==============================${NC}"
+    echo ""
+    echo -e "  Prejoin page has been ${RED}disabled${NC} for bot compatibility."
+    echo -e "  Open in your browser:"
+    echo -e "  ${CYAN}${url}/_load-test/<room>?count=<num>${NC}"
+    echo ""
+    echo -e "  Examples:"
+    echo -e "  • 10 participants in 'test':"
+    echo -e "    ${url}/_load-test/test?count=10"
+    echo -e ""
+    echo -e "  • 50 participants in 'ixi' with 2s delay:"
+    echo -e "    ${url}/_load-test/ixi?count=50&delay=2"
+    echo ""
+    ;;
+  2)
+    grep -q "^ENABLE_LOAD_TEST_CLIENT=" .env 2>/dev/null && sed -i 's/^ENABLE_LOAD_TEST_CLIENT=.*/ENABLE_LOAD_TEST_CLIENT=0/' .env || echo "ENABLE_LOAD_TEST_CLIENT=0" >>.env
+    grep -q "^ENABLE_PREJOIN_PAGE=" .env 2>/dev/null && sed -i 's/^ENABLE_PREJOIN_PAGE=.*/ENABLE_PREJOIN_PAGE=1/' .env || echo "ENABLE_PREJOIN_PAGE=1" >>.env
+    echo -e "\n${GREEN}Stress test disabled. Prejoin page re-enabled.${NC}"
+    echo -e "\n${YELLOW}=== Restarting web container ===${NC}"
+    docker compose up -d --force-recreate web 2>/dev/null | tail -1
+    sleep 3
+    echo -e "\n${GREEN}Done.${NC}"
+    ;;
+  3) return ;;
+  *)
+    echo -e "${RED}Invalid.${NC}"
+    sleep 1
+    ;;
+  esac
+
   read -rp "Press Enter..."
 }
 
 # ── Setup Monitoring ──
 setup_monitoring() {
+  local mode
+  mode=$(detect_mode)
+  if [ "$mode" = "none" ]; then
+    echo -e "${RED}Configure Jitsi first (option 1).${NC}"
+    read -rp "Press Enter..."
+    return
+  fi
+
+  local grafana_on
+  grafana_on=$(docker ps --filter "name=grafana" --format "{{.Names}}" 2>/dev/null)
+  local portainer_on
+  portainer_on=$(docker ps --filter "name=portainer" --format "{{.Names}}" 2>/dev/null)
+
   echo -e "\n${GREEN}==============================${NC}"
-  echo -e "${GREEN}  Monitoring Setup${NC}"
+  echo -e "${GREEN}  Services Toggle${NC}"
   echo -e "${GREEN}==============================${NC}\n"
-
-  # Check if already running
-  if docker ps --filter "name=prometheus" --format "{{.Names}}" 2>/dev/null | grep -q prometheus; then
-    echo -e "${YELLOW}Monitoring already running.${NC}"
-    read -rp "Restart? [y/N]: " ok
-    [[ ! "$ok" =~ ^[Yy] ]] && return
-  fi
-
-  echo -e "${GREEN}=== Starting Prometheus & Grafana ===${NC}"
-  docker compose up -d prometheus grafana 2>&1 | tail -1
-  sleep 3
-
-  # Check if JVB metrics are available
-  if docker ps --filter "name=jitsi-jvb" --format "{{.Names}}" 2>/dev/null | grep -q jvb; then
-    echo -e "${GREEN}JVB metrics detected.${NC}"
-  fi
-
-  # Create the dashboard if it doesn't exist
-  local ddir="/home/ixi_flower/services/grafana/provisioning/dashboards"
-  if [ -f "$ddir/jitsi-monitoring.json" ]; then
-    echo -e "${GREEN}Jitsi dashboard already provisioned.${NC}"
-  else
-    echo -e "${YELLOW}Dashboard file missing. Creating...${NC}"
-    mkdir -p "$ddir"
-    # (dashboard JSON would be created here - already done)
-  fi
-
-  docker compose restart grafana 2>/dev/null | tail -1
-
-  echo -e "\n${GREEN}==============================${NC}"
-  echo -e "${GREEN}  Monitoring Active!${NC}"
-  echo -e "${GREEN}==============================${NC}"
+  echo -e "  Grafana:   [$( [ -n "$grafana_on" ] && echo -e "${GREEN}ON${NC}" || echo -e "${RED}OFF${NC}" )]"
+  echo -e "  Portainer: [$( [ -n "$portainer_on" ] && echo -e "${GREEN}ON${NC}" || echo -e "${RED}OFF${NC}" )]\n"
+  echo "  1) Toggle Grafana (Prometheus + Grafana)"
+  echo "  2) Toggle Portainer"
+  echo "  3) Back"
   echo ""
-  echo -e "  Grafana: ${CYAN}http://$(hostname -I 2>/dev/null | awk '{print $1}'):3000${NC}"
-  echo -e "    Login:  ${YELLOW}admin / admin${NC}"
-  echo -e "    Dashboard: ${YELLOW}Jitsi Meet Monitoring${NC}"
-  echo ""
-  echo -e "  Prometheus: ${CYAN}http://$(hostname -I 2>/dev/null | awk '{print $1}'):9090${NC}"
-  echo ""
+  read -rp "Choice [1/2/3]: " svc
+
+  case "$svc" in
+    1)
+      if [ -n "$grafana_on" ]; then
+        echo -e "\n${YELLOW}Stopping Grafana & Prometheus...${NC}"
+        docker compose stop prometheus grafana 2>/dev/null
+        docker compose rm -f prometheus grafana 2>/dev/null
+        echo -e "${GREEN}Grafana & Prometheus stopped.${NC}"
+      else
+        echo -e "\n${GREEN}Starting Prometheus & Grafana...${NC}"
+        docker compose up -d prometheus grafana 2>&1 | tail -1
+        sleep 3
+        local ddir="/home/ixi_flower/services/grafana/provisioning/dashboards"
+        if [ ! -f "$ddir/jitsi-monitoring.json" ]; then
+          echo -e "${YELLOW}Dashboard file missing. Creating...${NC}"
+          mkdir -p "$ddir"
+        fi
+        docker compose restart grafana 2>/dev/null | tail -1
+        echo -e "${GREEN}Grafana & Prometheus started.${NC}"
+      fi
+      ;;
+    2)
+      if [ -n "$portainer_on" ]; then
+        echo -e "\n${YELLOW}Stopping Portainer...${NC}"
+        docker compose stop portainer 2>/dev/null
+        docker compose rm -f portainer 2>/dev/null
+        echo -e "${GREEN}Portainer stopped.${NC}"
+      else
+        echo -e "\n${GREEN}Starting Portainer...${NC}"
+        docker compose up -d portainer 2>&1 | tail -1
+        sleep 2
+        echo -e "${GREEN}Portainer started.${NC}"
+      fi
+      ;;
+    3) return ;;
+    *) echo -e "${RED}Invalid.${NC}"; sleep 1 ;;
+  esac
 
   read -rp "Press Enter..."
 }
 
 # ── Release ──
 do_release() {
-  local mode; mode=$(detect_mode)
-  if [ "$mode" = "none" ]; then echo -e "${RED}Configure Jitsi first (option 1).${NC}"; read -rp "Press Enter..."; return; fi
+  local mode
+  mode=$(detect_mode)
+  if [ "$mode" = "none" ]; then
+    echo -e "${RED}Configure Jitsi first (option 1).${NC}"
+    read -rp "Press Enter..."
+    return
+  fi
 
   if [[ -n $(git status -s) ]]; then
-    echo -e "${RED}Git tree is not clean, aborting release!${NC}"; read -rp "Press Enter..."; return
+    echo -e "${RED}Git tree is not clean, aborting release!${NC}"
+    read -rp "Press Enter..."
+    return
   fi
 
   read -rp "Version (e.g. 1.0): " V
   local RELEASE="${2:-stable}"
-  if [[ -z $V ]]; then echo -e "${RED}A version must be specified!${NC}"; read -rp "Press Enter..."; return; fi
+  if [[ -z $V ]]; then
+    echo -e "${RED}A version must be specified!${NC}"
+    read -rp "Press Enter..."
+    return
+  fi
 
   local VERSION="${RELEASE}-${V}"
   echo -e "\n${GREEN}Releasing ${VERSION}${NC}"
 
   if git rev-parse "${VERSION}" >/dev/null 2>&1; then
-    echo -e "${RED}Tag already exists!${NC}"; read -rp "Press Enter..."; return
+    echo -e "${RED}Tag already exists!${NC}"
+    read -rp "Press Enter..."
+    return
   fi
 
-  local LAST_VERSION; LAST_VERSION=$(git describe --tags --abbrev=0)
-  local CHANGES; CHANGES=$(git log --oneline --no-decorate --no-merges ${LAST_VERSION}..HEAD --pretty=format:"%x2a%x20%h%x20%s")
+  local LAST_VERSION
+  LAST_VERSION=$(git describe --tags --abbrev=0)
+  local CHANGES
+  CHANGES=$(git log --oneline --no-decorate --no-merges ${LAST_VERSION}..HEAD --pretty=format:"%x2a%x20%h%x20%s")
   echo -e "\n${YELLOW}Changelog:${NC}\n$CHANGES\n"
 
   read -rp "Proceed with release? [y/N]: " ok
@@ -385,8 +533,8 @@ do_release() {
 
   JITSI_BUILD=${VERSION} JITSI_RELEASE=${RELEASE} make release
 
-  echo -e "## ${VERSION}\n\nBased on ${RELEASE} release ${V}.\n\n${CHANGES}\n" > /tmp/jitsi-changelog.tmp
-  cat CHANGELOG.md >> /tmp/jitsi-changelog.tmp
+  echo -e "## ${VERSION}\n\nBased on ${RELEASE} release ${V}.\n\n${CHANGES}\n" >/tmp/jitsi-changelog.tmp
+  cat CHANGELOG.md >>/tmp/jitsi-changelog.tmp
   mv /tmp/jitsi-changelog.tmp CHANGELOG.md
 
   sed -i".bak" -e "s/unstable/${VERSION}/" *.yml
@@ -404,34 +552,72 @@ do_release() {
 main_menu() {
   while true; do
     clear 2>/dev/null || true
-    echo "=========================================="
-    echo "  Jitsi Meet Services Setup"
-    echo "=========================================="
+    echo ""
+    echo "     ██╗██╗████████╗███████╗██╗    ███╗   ███╗███████╗███████╗████████╗"
+    echo "     ██║██║╚══██╔══╝██╔════╝██║    ████╗ ████║██╔════╝██╔════╝╚══██╔══╝"
+    echo "     ██║██║   ██║   ███████╗██║    ██╔████╔██║█████╗  █████╗     ██║"
+    echo "██   ██║██║   ██║   ╚════██║██║    ██║╚██╔╝██║██╔══╝  ██╔══╝     ██║"
+    echo "╚█████╔╝██║   ██║   ███████║██║    ██║ ╚═╝ ██║███████╗███████╗   ██║"
+    echo " ╚════╝ ╚═╝   ╚═╝   ╚══════╝╚═╝    ╚═╝     ╚═╝╚══════╝╚══════╝   ╚═╝"
+    echo ""
     show_status
     echo "  Select an option:"
     echo "  1) Setup / Restart Jitsi Meet"
-    echo "  2) Regenerate Jibri Pool (jibri-pool.yml)"
+    echo "  2) Regenerate & Change Jibri Pool Count (jibri-pool.yml)"
     echo "  3) Setup Stress Test Client"
-    echo "  4) Setup Monitoring (Grafana + Prometheus)"
+    echo "  4) Toggle Services (Grafana / Portainer)"
     echo "  5) View All Running Containers"
-    echo "  6) Release (tag & push)"
-    echo "  7) Exit"
+    echo "  6) Exit"
     echo ""
-    read -rp "Choice [1/2/3/4/5/6/7]: " CHOICE
+    read -rp "Choice [1/2/3/4/5/6]: " CHOICE
     case "$CHOICE" in
-      1) setup_jitsi ;;
-      2) generate_jibri_pool; echo ""; read -rp "Press Enter..." ;;
-      3) setup_stress_test ;;
-      4) setup_monitoring ;;
-      5) echo ""; docker compose ps --format '{{.Name}}' | while read -r cname; do ip=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$cname" 2>/dev/null); port=$(docker inspect -f '{{range $p, $c := .NetworkSettings.Ports}}{{$p}}{{end}}' "$cname" 2>/dev/null | cut -d'/' -f1 | head -1); if [ -n "$port" ]; then echo -e "  ${GREEN}${ip}:${port}${NC}  ${CYAN}${cname}${NC}"; else echo -e "  ${YELLOW}${ip}${NC}  ${CYAN}${cname}${NC}"; fi; done; echo ""; read -rp "Press Enter..." ;;
-      6) do_release ;;
-      7) echo "Goodbye."; exit 0 ;;
-      *) echo -e "${RED}Invalid.${NC}"; sleep 1 ;;
+    1) setup_jitsi ;;
+    2)
+      local current_jibri
+      current_jibri=$(grep -E "^JIBRI_COUNT=" .env 2>/dev/null | cut -d= -f2-)
+      current_jibri="${current_jibri:-3}"
+      echo -e "\n  Current Jibri count: ${CYAN}${current_jibri}${NC}"
+      echo ""
+      read -rp "Enter new Jibri count [${current_jibri}]: " new_count
+      new_count="${new_count:-$current_jibri}"
+      if ! [[ "$new_count" =~ ^[0-9]+$ ]] || [ "$new_count" -lt 1 ]; then
+        echo -e "${RED}Invalid count. Using ${current_jibri}.${NC}"
+        new_count="$current_jibri"
+      fi
+      grep -q "^JIBRI_COUNT=" .env 2>/dev/null && sed -i "s/^JIBRI_COUNT=.*/JIBRI_COUNT=${new_count}/" .env || echo "JIBRI_COUNT=${new_count}" >>.env
+      echo -e "${GREEN}JIBRI_COUNT set to ${new_count}${NC}"
+      generate_jibri_pool
+      echo ""
+      read -rp "Press Enter..."
+      ;;
+    3) setup_stress_test ;;
+    4) setup_monitoring ;;
+    5)
+      echo ""
+      docker compose ps --format '{{.Name}}' | while read -r cname; do
+        ip=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$cname" 2>/dev/null)
+        port=$(docker inspect -f '{{range $p, $c := .NetworkSettings.Ports}}{{$p}}{{end}}' "$cname" 2>/dev/null | cut -d'/' -f1 | head -1)
+        if [ -n "$port" ]; then echo -e "  ${GREEN}${ip}:${port}${NC}  ${CYAN}${cname}${NC}"; else echo -e "  ${YELLOW}${ip}${NC}  ${CYAN}${cname}${NC}"; fi
+      done
+      echo ""
+      read -rp "Press Enter..."
+      ;;
+     6)
+      echo "Goodbye."
+      exit 0
+      ;;
+    *)
+      echo -e "${RED}Invalid.${NC}"
+      sleep 1
+      ;;
     esac
   done
 }
 
 # ── Entry ──
 if ! command -v docker &>/dev/null; then install_docker; fi
-if ! docker compose version &>/dev/null; then echo -e "${RED}Docker Compose unavailable.${NC}"; exit 1; fi
+if ! docker compose version &>/dev/null; then
+  echo -e "${RED}Docker Compose unavailable.${NC}"
+  exit 1
+fi
 main_menu
