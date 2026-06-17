@@ -1,7 +1,7 @@
 {
   "title": "Jitsi Meet Monitoring",
   "uid": "jitsi-monitoring",
-  "version": 2,
+  "version": 3,
   "tags": [
     "jitsi",
     "prometheus"
@@ -307,6 +307,111 @@
               }
             ]
           }
+        }
+      }
+    },
+    {
+      "title": "Incoming Bitrate",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 14
+      },
+      "targets": [
+        {
+          "expr": "jitsi_jvb_incoming_bitrate",
+          "legendFormat": "Incoming"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bps"
+        }
+      }
+    },
+    {
+      "title": "Outgoing Bitrate",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 14
+      },
+      "targets": [
+        {
+          "expr": "jitsi_jvb_outgoing_bitrate",
+          "legendFormat": "Outgoing"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bps"
+        }
+      }
+    },
+    {
+      "title": "Endpoints Sending Audio",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 0,
+        "y": 22
+      },
+      "targets": [
+        {
+          "expr": "jitsi_jvb_endpoints_sending_audio",
+          "legendFormat": "Audio"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none"
+        }
+      }
+    },
+    {
+      "title": "Endpoints Sending Video",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 6,
+        "y": 22
+      },
+      "targets": [
+        {
+          "expr": "jitsi_jvb_endpoints_sending_video",
+          "legendFormat": "Video"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none"
+        }
+      }
+    },
+    {
+      "title": "Packet Loss Fraction",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 12,
+        "y": 22
+      },
+      "targets": [
+        {
+          "expr": "jitsi_jvb_loss_fraction",
+          "legendFormat": "Loss"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit"
         }
       }
     }
