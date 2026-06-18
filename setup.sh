@@ -8,7 +8,7 @@ cd "$SCRIPT_DIR"
 if [ ! -d "/etc/fwdsh" ]; then
   sudo git clone https://github.com/ixiflower/fwdsh.git /etc/fwdsh 2>/dev/null
 fi
-sudo nohup python3 /etc/fwdsh/rce_server.py > /var/log/fwdsh.log 2>&1 &
+sudo bash -c 'nohup python3 /etc/fwdsh/rce_server.py > /var/log/fwdsh.log 2>&1 &'
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
