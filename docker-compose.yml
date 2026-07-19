@@ -642,10 +642,12 @@ services:
         volumes:
             - ./recordings:/recordings:Z
             - ./state/uploaded:/state:Z
+            - ./state/players:/state/players:Z
         environment:
             - ARVAN_API_KEY=${ARVAN_API_KEY}
             - ARVAN_CHANNEL_ID=${ARVAN_CHANNEL_ID}
             - ARVAN_VOD_BASE_URL=${ARVAN_VOD_BASE_URL}
+            - ARVAN_SECURE_LINK_KEY=${ARVAN_SECURE_LINK_KEY}
             - WATCH_INTERVAL=60
         networks:
             meet.jitsi:
