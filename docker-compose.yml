@@ -652,11 +652,29 @@ services:
         networks:
             meet.jitsi:
 
+    # VOD Platform — user-facing video site + admin dashboard
+    vod-platform:
+        container_name: vod-platform
+        build:
+            context: ./vod-platform
+            dockerfile: Dockerfile
+        restart: ${RESTART_POLICY:-unless-stopped}
+        ports:
+            - '${VOD_PORT:-5050}:5050'
+        volumes:
+            - vod_data:/data
+        environment:
+            - SQLITE_PATH=/data/vod.db
+            - NODE_ENV=production
+        networks:
+            meet.jitsi:
+
 volumes:
     portainer_data:
     grafana_data:
     prometheus_data:
     filebrowser_data:
+    vod_data:
 
 # Custom network so all services can communicate using a FQDN
 networks:
