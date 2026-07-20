@@ -3,6 +3,13 @@ recordings/
 state/
 config/*/logs/
 
+# VOD Platform — build artifacts (source lives in vod-platform-next/)
+vod-platform-next/.next/
+vod-platform-next/node_modules/
+vod-platform-next/*.db
+vod-platform-next/*.db-shm
+vod-platform-next/*.db-wal
+
 # Environment files (contain secrets)
 .env
 .env.*
