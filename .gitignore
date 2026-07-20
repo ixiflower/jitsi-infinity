@@ -14,3 +14,7 @@ vod-platform-next/*.db-wal
 .env
 .env.*
 
+# Build output (regenerated from vod-platform-next/)
+vod-platform-app/
+scripts/*.bak
+
