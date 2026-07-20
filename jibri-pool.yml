@@ -16,6 +16,7 @@ services:
       - ./recordings:/recordings:Z
     environment:
       - JIBRI_INSTANCE_ID=1
+      - JAVA_TOOL_OPTIONS=-Dwebdriver.chrome.driver=/usr/bin/chromedriver
     depends_on:
       - jicofo
     networks:
@@ -34,6 +35,7 @@ services:
       - ./recordings:/recordings:Z
     environment:
       - JIBRI_INSTANCE_ID=2
+      - JAVA_TOOL_OPTIONS=-Dwebdriver.chrome.driver=/usr/bin/chromedriver
     depends_on:
       - jicofo
     networks:
@@ -52,6 +54,7 @@ services:
       - ./recordings:/recordings:Z
     environment:
       - JIBRI_INSTANCE_ID=3
+      - JAVA_TOOL_OPTIONS=-Dwebdriver.chrome.driver=/usr/bin/chromedriver
     depends_on:
       - jicofo
     networks:

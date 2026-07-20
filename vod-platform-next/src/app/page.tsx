@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { db } from "../db";
+export const dynamic = "force-dynamic";
 import { videos } from "../db/schema";
 import { desc, eq, sql } from "drizzle-orm";
 
