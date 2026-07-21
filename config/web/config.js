@@ -23,11 +23,13 @@ config.bridgeChannel = {
 // Video configuration.
 //
 
-config.resolution = 720;
+config.resolution = 1080;
+config.startBitrate = "8000000";
+config.channelLastN = -1;
 config.constraints = {
     video: {
-        height: { ideal: 720, max: 720, min: 180 },
-        width: { ideal: 1280, max: 1280, min: 320},
+        height: { ideal: 1080, max: 1080, min: 180 },
+        width: { ideal: 1920, max: 1920, min: 320},
     }
 };
 
@@ -68,7 +70,7 @@ config.enableNoisyMicDetection = true;
 //
 
 config.p2p = {
-    enabled: true,
+    enabled: false,
     codecPreferenceOrder: ["AV1", "VP9", "VP8", "H264"],
     mobileCodecPreferenceOrder: ["VP8", "VP9", "H264", "AV1"]
 };
@@ -148,8 +150,13 @@ config.welcomePage = {
     disabled: false
 };
 
-// Close page.
+// Close page - redirect to welcome page instead of showing "meeting terminated"
 config.enableClosePage = false;
+config.closePage = {
+    enabled: false,
+    url: '../',
+    actionUrl: '../'
+};
 
 // Default language.
 // Require users to always specify a display name.
@@ -234,4 +241,11 @@ config.whiteboard = {
 // Testing
 config.testing = {
     enableCodecSelectionAPI: true
+};
+
+// Keep toolbar & filmstrip visible — prevents auto-hide during recording
+config.toolbarConfig = {
+    alwaysVisible: false,
+    initialTimeout: 20000,
+    timeout: 0
 };

@@ -18,6 +18,6 @@ vod-platform-next/*.db-wal
 vod-platform-app/
 scripts/*.bak
 
-# Hermes agent temp files
-.hermes-tmp*
-
+logs/
+uploads/
+package-lock.json

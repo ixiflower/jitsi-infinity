@@ -495,6 +495,367 @@ setup_monitoring() {
   read -rp "Press Enter..."
 }
 
+# ── Debug / Self-Heal ──
+debug_system() {
+  local mode
+  mode=$(detect_mode)
+  if [ "$mode" = "none" ]; then
+    echo -e "${RED}Configure Jitsi first (option 1).${NC}"
+    read -rp "Press Enter..."
+    return
+  fi
+
+  echo -e "\n${CYAN}══════════════════════════════════════${NC}"
+  echo -e "${CYAN}  Jitsi Diagnostic & Self-Heal${NC}"
+  echo -e "${CYAN}══════════════════════════════════════${NC}\n"
+
+  local issues=0 fixed=0
+  local pub_ip
+  pub_ip=$(curl -s --max-time 3 ifconfig.me 2>/dev/null || ip route get 1 | awk '{print $7; exit}' 2>/dev/null || echo "127.0.0.1")
+
+  # helper — safe docker logs (tail only)
+  log_grep() { docker logs --tail 200 "$1" 2>&1 | grep -q "$2" 2>/dev/null; return $?; }
+
+  # ── 1. Containers ──
+  echo -e "${YELLOW}[1/12] Checking containers...${NC}"
+  local missing=""
+  for c in jitsi-web jitsi-prosody jitsi-jicofo jitsi-jvb jitsi-jibri-1; do
+    if ! docker ps --format "{{.Names}}" 2>/dev/null | grep -q "$c"; then
+      missing="$missing $c"
+    fi
+  done
+  if [ -n "$missing" ]; then
+    echo -e "  ${RED}✗ Missing:$missing${NC}"
+    echo -e "  ${YELLOW}→ Starting all services...${NC}"
+    cd "$SCRIPT_DIR" && docker compose -f docker-compose.yml -f jibri-pool.yml up -d 2>/dev/null
+    sleep 5
+    ((issues++))
+  else
+    echo -e "  ${GREEN}✓ All core containers running${NC}"
+  fi
+
+  # ── 2. Jibri MUC ──
+  echo -e "\n${YELLOW}[2/12] Checking Jibri recording nodes...${NC}"
+  local jibri_ok=0 jibri_total=0
+  for c in $(docker ps --filter "name=jibri" --format "{{.Names}}" 2>/dev/null); do
+    jibri_total=$((jibri_total + 1))
+    if log_grep "$c" "Joined MUC: jibribrewery"; then
+      jibri_ok=$((jibri_ok + 1))
+    fi
+  done
+  if [ "$jibri_total" -eq 0 ]; then
+    echo -e "  ${RED}✗ No Jibri containers${NC}"
+    ((issues++))
+  elif [ "$jibri_ok" -lt "$jibri_total" ]; then
+    echo -e "  ${RED}✗ $jibri_ok/$jibri_total joined MUC — recreating${NC}"
+    cd "$SCRIPT_DIR" && docker compose -f docker-compose.yml -f jibri-pool.yml up -d --force-recreate $(docker ps --filter "name=jibri" --format "{{.Names}}" 2>/dev/null) 2>/dev/null
+    ((issues++))
+  else
+    echo -e "  ${GREEN}✓ All $jibri_total Jibris connected${NC}"
+  fi
+
+  # ── 3. Jibri auth ──
+  echo -e "\n${YELLOW}[3/12] Checking Jibri XMPP authentication...${NC}"
+  local auth_fail=0
+  for c in $(docker ps --filter "name=jibri" --format "{{.Names}}" 2>/dev/null | head -1); do
+    if log_grep "$c" "not-authorized"; then
+      auth_fail=1
+    fi
+  done
+  if [ "$auth_fail" = "1" ]; then
+    echo -e "  ${RED}✗ Auth failed${NC}"
+    local jp rp
+    jp=$(grep -E "^JIBRI_XMPP_PASSWORD=" .env.jibri 2>/dev/null | cut -d= -f2-)
+    rp=$(grep -E "^JIBRI_RECORDER_PASSWORD=" .env.jibri 2>/dev/null | cut -d= -f2-)
+    [ -n "$jp" ] && docker exec jitsi-prosody prosodyctl --config /config/prosody.cfg.lua register jibri auth.meet.jitsi "$jp" 2>/dev/null && ((fixed++))
+    [ -n "$rp" ] && docker exec jitsi-prosody prosodyctl --config /config/prosody.cfg.lua register recorder hidden.meet.jitsi "$rp" 2>/dev/null && ((fixed++))
+    cd "$SCRIPT_DIR" && docker compose -f docker-compose.yml -f jibri-pool.yml up -d --force-recreate $(docker ps --filter "name=jibri" --format "{{.Names}}" 2>/dev/null) 2>/dev/null
+    ((issues++))
+  else
+    echo -e "  ${GREEN}✓ Jibri auth OK${NC}"
+  fi
+
+  # ── 4. JVB bridge ──
+  echo -e "\n${YELLOW}[4/12] Checking JVB Video Bridge...${NC}"
+  if log_grep jitsi-jvb "Joined MUC: jvbbrewery"; then
+    echo -e "  ${GREEN}✓ JVB connected to brewery${NC}"
+  else
+    echo -e "  ${RED}✗ JVB not connected${NC}"
+    cd "$SCRIPT_DIR" && docker compose up -d --force-recreate jvb 2>/dev/null
+    ((issues++))
+  fi
+  if log_grep jitsi-jicofo "no operational bridges"; then
+    echo -e "  ${RED}✗ jicofo: no operational bridges${NC}"
+    cd "$SCRIPT_DIR" && docker compose restart jicofo 2>/dev/null
+    ((issues++)); ((fixed++))
+  else
+    echo -e "  ${GREEN}✓ Jicofo sees operational bridge${NC}"
+  fi
+
+  # ── 5. JVB port 10000 ──
+  echo -e "\n${YELLOW}[5/12] Checking JVB UDP port 10000...${NC}"
+  if ss -tulpn 2>/dev/null | grep -q ":10000 "; then
+    echo -e "  ${GREEN}✓ Port 10000 listening${NC}"
+  else
+    echo -e "  ${RED}✗ Port 10000 not listening${NC}"
+    cd "$SCRIPT_DIR" && docker compose up -d --force-recreate jvb 2>/dev/null
+    ((issues++))
+  fi
+
+  # ── 6. Colibri WS proxy ──
+  echo -e "\n${YELLOW}[6/12] Checking Colibri WebSocket relay...${NC}"
+  if docker exec jitsi-web cat /config/nginx-custom/colibri-ws.conf &>/dev/null; then
+    echo -e "  ${GREEN}✓ WebSocket relay configured${NC}"
+  else
+    echo -e "  ${YELLOW}⚠ Missing — creating...${NC}"
+    local ws_dir
+    ws_dir=$(docker inspect -f '{{range .Mounts}}{{if eq .Destination "/config"}}{{.Source}}{{end}}{{end}}' jitsi-web 2>/dev/null)
+    if [ -n "$ws_dir" ]; then
+      mkdir -p "$ws_dir/nginx-custom" 2>/dev/null
+      cat > "$ws_dir/nginx-custom/colibri-ws.conf" << 'EOF'
+location ~ ^/colibri-ws(/.*)?$ {
+    proxy_pass http://jitsi-jvb:8080/colibri-ws$1$is_args$args;
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_read_timeout 86400s;
+    proxy_send_timeout 86400s;
+}
+EOF
+    fi
+    docker exec jitsi-web nginx -s reload &>/dev/null || cd "$SCRIPT_DIR" && docker compose restart web 2>/dev/null
+    ((fixed++))
+  fi
+
+  # ── 7. P2P ──
+  echo -e "\n${YELLOW}[7/12] Checking P2P mode...${NC}"
+  if grep -q "enabled: true" config/web/config.js 2>/dev/null && [ "$mode" = "server" ]; then
+    echo -e "  ${YELLOW}⚠ P2P enabled — disabling${NC}"
+    sed -i 's/enabled: true/enabled: false/' config/web/config.js 2>/dev/null
+    ((fixed++))
+  else
+    echo -e "  ${GREEN}✓ P2P disabled${NC}"
+  fi
+
+  # ── 8. Recording quality ──
+  echo -e "\n${YELLOW}[8/12] Checking recording quality...${NC}"
+  local preset crf
+  preset=$(grep -E "^JIBRI_RECORDING_VIDEO_ENCODE_PRESET_RECORDING=" .env.jibri 2>/dev/null | cut -d= -f2-)
+  crf=$(grep -E "^JIBRI_RECORDING_CONSTANT_RATE_FACTOR=" .env.jibri 2>/dev/null | cut -d= -f2-)
+  case "$preset" in medium|slow|slower)
+    echo -e "  ${YELLOW}⚠ Preset '$preset' may overload CPU${NC}"
+    ((issues++));;
+    *) echo -e "  ${GREEN}✓ Preset $preset, CRF $crf${NC}";;
+  esac
+
+  # ── 9. STUN ──
+  echo -e "\n${YELLOW}[9/12] Checking STUN/TURN...${NC}"
+  local stun
+  stun=$(grep -E "^JVB_STUN_SERVERS=" .env 2>/dev/null | cut -d= -f2-)
+  if [ -z "$stun" ]; then
+    echo -e "  ${YELLOW}⚠ No STUN — adding${NC}"
+    echo 'JVB_STUN_SERVERS=stun.l.google.com:19302,stun1.l.google.com:19302' >> .env
+    ((fixed++))
+  else
+    echo -e "  ${GREEN}✓ STUN: $stun${NC}"
+  fi
+
+  # ── 10. ArvanCloud ──
+  echo -e "\n${YELLOW}[10/12] Checking ArvanCloud connection...${NC}"
+  local arvan_key
+  arvan_key=$(grep -E "^ARVANCLOUD_API_KEY=" .env 2>/dev/null || grep -E "^ARVANCLOUD_API_KEY=" scripts/sync-vods-to-db.py 2>/dev/null | head -1)
+  if [ -z "$arvan_key" ]; then
+    echo -e "  ${YELLOW}⚠ No ArvanCloud API key found${NC}"
+    ((issues++))
+  else
+    local arvan_test
+    arvan_test=$(curl -s --max-time 5 -H "Authorization: $arvan_key" "https://napi.arvancloud.ir/vod/2.0/videos" 2>/dev/null)
+    if echo "$arvan_test" | grep -q '"data"'; then
+      echo -e "  ${GREEN}✓ ArvanCloud API reachable${NC}"
+    elif echo "$arvan_test" | grep -qi "unauthorized\|error"; then
+      echo -e "  ${RED}✗ ArvanCloud API key invalid${NC}"
+      ((issues++))
+    else
+      echo -e "  ${RED}✗ ArvanCloud API unreachable${NC}"
+      ((issues++))
+    fi
+  fi
+
+  # ── 11. VOD platform ──
+  echo -e "\n${YELLOW}[11/12] Checking VOD player...${NC}"
+  if command -v pm2 &>/dev/null && pm2 list 2>/dev/null | grep -q "vod-platform"; then
+    echo -e "  ${GREEN}✓ VOD platform (PM2) running${NC}"
+    local vod_resp
+    vod_resp=$(curl -s --max-time 5 "http://localhost:5050" 2>/dev/null)
+    if echo "$vod_resp" | grep -qi "html\|<!DOCTYPE"; then
+      echo -e "  ${GREEN}✓ VOD web UI responds on :5050${NC}"
+    else
+      echo -e "  ${YELLOW}⚠ VOD process running but :5050 not responding${NC}"
+      ((issues++))
+    fi
+  else
+    local vod_up
+    vod_up=$(docker ps --filter "name=vod" --format "{{.Names}}" 2>/dev/null)
+    if [ -n "$vod_up" ]; then
+      echo -e "  ${GREEN}✓ VOD platform (Docker) running${NC}"
+    else
+      echo -e "  ${RED}✗ VOD platform not found (PM2 or Docker)${NC}"
+      ((issues++))
+    fi
+  fi
+
+  # ── 12. Public URL reachability ──
+  echo -e "\n${YELLOW}[12/12] Checking Jitsi public URL...${NC}"
+  local jitsi_url
+  jitsi_url=$(grep -E "^PUBLIC_URL=" .env 2>/dev/null | cut -d= -f2-)
+  if [ -z "$jitsi_url" ]; then
+    jitsi_url="https://${pub_ip}:8443"
+  fi
+  local http_code
+  http_code=$(curl -sk --max-time 5 -o /dev/null -w "%{http_code}" "$jitsi_url" 2>/dev/null || echo "000")
+  if [ "$http_code" = "200" ] || [ "$http_code" = "302" ] || [ "$http_code" = "301" ]; then
+    echo -e "  ${GREEN}✓ $jitsi_url → HTTP $http_code${NC}"
+  else
+    echo -e "  ${RED}✗ $jitsi_url → HTTP $http_code${NC}"
+    ((issues++))
+  fi
+
+  # ── Summary ──
+  echo ""
+  echo -e "${CYAN}══════════════════════════════════════${NC}"
+  if [ "$issues" -eq 0 ] && [ "$fixed" -eq 0 ]; then
+    echo -e "${GREEN}  ✅ All 12 checks passed — system healthy${NC}"
+  else
+    echo -e "  ${YELLOW}Issues found: $issues${NC}"
+    [ "$fixed" -gt 0 ] && echo -e "  ${GREEN}Auto-fixed:  $fixed${NC}"
+    echo -e "  ${YELLOW}Restarting affected containers...${NC}"
+    cd "$SCRIPT_DIR" && docker compose -f docker-compose.yml -f jibri-pool.yml restart 2>/dev/null
+    echo -e "${GREEN}  Done.${NC}"
+  fi
+  echo -e "${CYAN}══════════════════════════════════════${NC}"
+  read -rp "Press Enter..."
+}
+
+# ── Video Quality Settings ──
+setup_quality() {
+  local mode
+  mode=$(detect_mode)
+  if [ "$mode" = "none" ]; then
+    echo -e "${RED}Configure Jitsi first (option 1).${NC}"
+    read -rp "Press Enter..."
+    return
+  fi
+
+  # Read current settings
+  local cur_res cur_crf cur_bitrate cur_preset cur_live_res
+  cur_res=$(grep -E "^JIBRI_RECORDING_RESOLUTION=" .env.jibri 2>/dev/null | cut -d= -f2-)
+  cur_res="${cur_res:-1920x1080}"
+  cur_crf=$(grep -E "^JIBRI_RECORDING_CONSTANT_RATE_FACTOR=" .env.jibri 2>/dev/null | cut -d= -f2-)
+  cur_crf="${cur_crf:-20}"
+  cur_bitrate=$(grep -E "^JIBRI_RECORDING_STREAMING_MAX_BITRATE=" .env.jibri 2>/dev/null | cut -d= -f2-)
+  cur_bitrate="${cur_bitrate:-5000k}"
+  cur_preset=$(grep -E "^JIBRI_RECORDING_VIDEO_ENCODE_PRESET_RECORDING=" .env.jibri 2>/dev/null | cut -d= -f2-)
+  cur_preset="${cur_preset:-veryfast}"
+  cur_live_res=$(grep -E "config.resolution = " config/web/config.js 2>/dev/null | grep -oE '[0-9]+')
+  cur_live_res="${cur_live_res:-1080}"
+
+  while true; do
+    echo -e "\n${CYAN}── Video Quality Settings ──${NC}"
+    echo ""
+    echo -e "  ${YELLOW}Live Camera:${NC}  ${cur_live_res}p"
+    echo -e "  ${YELLOW}Recording:${NC}    ${cur_res}, CRF ${cur_crf}, ${cur_bitrate}, preset: ${cur_preset}"
+    echo ""
+    echo "  Select a quality preset or customize:"
+    echo "  1) Low     (720p, CRF 25, 3000k, ultrafast) — lightest CPU"
+    echo "  2) Medium  (720p, CRF 23, 4000k, veryfast)  — balanced CPU"
+    echo "  3) High    (1080p, CRF 20, 6000k, veryfast)  — good quality"
+    echo "  4) Ultra   (1080p, CRF 18, 8000k, faster)    — best quality, heavier CPU"
+    echo "  5) Custom  — set each option individually"
+    echo "  6) Back"
+    echo ""
+    read -rp "Choice [1/2/3/4/5/6]: " q
+
+    local new_res new_crf new_bitrate new_preset new_live_res
+    case "$q" in
+      1)
+        new_res="1280x720"; new_crf="25"; new_bitrate="3000k"; new_preset="ultrafast"; new_live_res="720" ;;
+      2)
+        new_res="1280x720"; new_crf="23"; new_bitrate="4000k"; new_preset="veryfast"; new_live_res="720" ;;
+      3)
+        new_res="1920x1080"; new_crf="20"; new_bitrate="6000k"; new_preset="veryfast"; new_live_res="1080" ;;
+      4)
+        new_res="1920x1080"; new_crf="18"; new_bitrate="8000k"; new_preset="faster"; new_live_res="1080" ;;
+      5)
+        echo ""
+        read -rp "Recording resolution [1920x1080]: " new_res
+        new_res="${new_res:-1920x1080}"
+        read -rp "CRF (0-51, lower=better) [20]: " new_crf
+        new_crf="${new_crf:-20}"
+        read -rp "Bitrate (e.g. 5000k) [6000k]: " new_bitrate
+        new_bitrate="${new_bitrate:-6000k}"
+        echo "  Presets: ultrafast, superfast, veryfast, faster, fast, medium, slow"
+        read -rp "Encode preset [veryfast]: " new_preset
+        new_preset="${new_preset:-veryfast}"
+        echo ""
+        echo "  Live camera resolution:"
+        echo "    1) 720p"
+        echo "    2) 1080p"
+        read -rp "  Choice [2]: " lr
+        case "$lr" in 1) new_live_res="720";; *) new_live_res="1080";; esac
+        ;;
+      6) return ;;
+      *) echo -e "${RED}Invalid.${NC}"; sleep 1; continue ;;
+    esac
+
+    echo -e "\n${YELLOW}Applying:${NC}"
+    echo -e "  Live camera: ${new_live_res}p"
+    echo -e "  Recording:   ${new_res}, CRF ${new_crf}, ${new_bitrate}, ${new_preset}"
+    read -rp "Apply? [Y/n]: " ok
+    [[ "$ok" =~ ^[Nn] ]] && continue
+
+    # Update .env.jibri
+    sed -i "s/^JIBRI_RECORDING_RESOLUTION=.*/JIBRI_RECORDING_RESOLUTION=${new_res}/" .env.jibri 2>/dev/null
+    grep -q "^JIBRI_RECORDING_RESOLUTION=" .env.jibri 2>/dev/null || echo "JIBRI_RECORDING_RESOLUTION=${new_res}" >> .env.jibri
+    sed -i "s/^JIBRI_RECORDING_CONSTANT_RATE_FACTOR=.*/JIBRI_RECORDING_CONSTANT_RATE_FACTOR=${new_crf}/" .env.jibri 2>/dev/null
+    grep -q "^JIBRI_RECORDING_CONSTANT_RATE_FACTOR=" .env.jibri 2>/dev/null || echo "JIBRI_RECORDING_CONSTANT_RATE_FACTOR=${new_crf}" >> .env.jibri
+    sed -i "s/^JIBRI_RECORDING_STREAMING_MAX_BITRATE=.*/JIBRI_RECORDING_STREAMING_MAX_BITRATE=${new_bitrate}/" .env.jibri 2>/dev/null
+    grep -q "^JIBRI_RECORDING_STREAMING_MAX_BITRATE=" .env.jibri 2>/dev/null || echo "JIBRI_RECORDING_STREAMING_MAX_BITRATE=${new_bitrate}" >> .env.jibri
+    sed -i "s/^JIBRI_RECORDING_VIDEO_ENCODE_PRESET_RECORDING=.*/JIBRI_RECORDING_VIDEO_ENCODE_PRESET_RECORDING=${new_preset}/" .env.jibri 2>/dev/null
+    grep -q "^JIBRI_RECORDING_VIDEO_ENCODE_PRESET_RECORDING=" .env.jibri 2>/dev/null || echo "JIBRI_RECORDING_VIDEO_ENCODE_PRESET_RECORDING=${new_preset}" >> .env.jibri
+    sed -i "s/^JIBRI_RECORDING_VIDEO_ENCODE_PRESET_STREAMING=.*/JIBRI_RECORDING_VIDEO_ENCODE_PRESET_STREAMING=${new_preset}/" .env.jibri 2>/dev/null
+    grep -q "^JIBRI_RECORDING_VIDEO_ENCODE_PRESET_STREAMING=" .env.jibri 2>/dev/null || echo "JIBRI_RECORDING_VIDEO_ENCODE_PRESET_STREAMING=${new_preset}" >> .env.jibri
+
+    # Update live camera resolution in config.js
+    sed -i "s/config.resolution = [0-9]*;/config.resolution = ${new_live_res};/" config/web/config.js
+    sed -i "s/height: { ideal: [0-9]*, max: [0-9]*/height: { ideal: ${new_live_res}, max: ${new_live_res}/" config/web/config.js
+    if [ "$new_live_res" = "1080" ]; then
+      sed -i "s/width: { ideal: [0-9]*, max: [0-9]*/width: { ideal: 1920, max: 1920/" config/web/config.js
+    else
+      sed -i "s/width: { ideal: [0-9]*, max: [0-9]*/width: { ideal: 1280, max: 1280/" config/web/config.js
+    fi
+
+    echo -e "\n${GREEN}Quality settings saved. Restarting containers...${NC}"
+
+    # Restart web to pick up new config.js
+    docker compose restart web 2>/dev/null && echo -e "  ${GREEN}✓ Web restarted${NC}"
+
+    # Recreate Jibri containers to pick up new .env.jibri
+    echo -e "${YELLOW}Recreating Jibri containers...${NC}"
+    for c in $(docker ps --filter "name=jibri" --format "{{.Names}}" 2>/dev/null); do
+      docker compose -f docker-compose.yml -f jibri-pool.yml up -d --force-recreate "$c" 2>/dev/null
+      echo -e "  ${GREEN}✓ $c recreated${NC}"
+    done
+
+    echo -e "\n${GREEN}Done. New recordings will use the updated quality settings.${NC}"
+    read -rp "Press Enter..."
+    return
+  done
+}
+
 # ── Release ──
 do_release() {
   local mode
@@ -573,9 +934,11 @@ main_menu() {
     echo "  3) Setup Stress Test Client"
     echo "  4) Toggle Services (Grafana / Portainer)"
     echo "  5) View All Running Containers"
-    echo "  6) Exit"
+    echo "  6) Video Quality Settings"
+    echo "  7) Debug & Self-Heal"
+    echo "  8) Exit"
     echo ""
-    read -rp "Choice [1/2/3/4/5/6]: " CHOICE
+    read -rp "Choice [1/2/3/4/5/6/7/8]: " CHOICE
     case "$CHOICE" in
     1) setup_jitsi ;;
     2)
@@ -593,22 +956,40 @@ main_menu() {
       grep -q "^JIBRI_COUNT=" .env 2>/dev/null && sed -i "s/^JIBRI_COUNT=.*/JIBRI_COUNT=${new_count}/" .env || echo "JIBRI_COUNT=${new_count}" >>.env
       echo -e "${GREEN}JIBRI_COUNT set to ${new_count}${NC}"
       generate_jibri_pool
+
+      echo -e "\n${YELLOW}Recreating Jibri containers to apply pool change...${NC}"
+      # Remove old jibri containers by name, then start fresh pool
+      docker rm -f $(docker ps -a --filter "name=jibri" --format "{{.Names}}" 2>/dev/null) 2>/dev/null
+      docker compose -f docker-compose.yml -f jibri-pool.yml up -d 2>&1
+      echo -e "${GREEN}✓ Jibri pool updated to ${new_count} instances${NC}"
+
       echo ""
       read -rp "Press Enter..."
       ;;
     3) setup_stress_test ;;
     4) setup_monitoring ;;
-    5)
+     5)
       echo ""
-      docker compose ps --format '{{.Name}}' | while read -r cname; do
-        ip=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$cname" 2>/dev/null)
-        port=$(docker inspect -f '{{range $p, $c := .NetworkSettings.Ports}}{{$p}}{{end}}' "$cname" 2>/dev/null | cut -d'/' -f1 | head -1)
-        if [ -n "$port" ]; then echo -e "  ${GREEN}${ip}:${port}${NC}  ${CYAN}${cname}${NC}"; else echo -e "  ${YELLOW}${ip}${NC}  ${CYAN}${cname}${NC}"; fi
-      done
+      local pub_ip
+      pub_ip=$(curl -s --max-time 3 ifconfig.me 2>/dev/null || ip route get 1 | awk '{print $7; exit}' 2>/dev/null || echo "127.0.0.1")
+      while read -r cname cports; do
+        [ -z "$cname" ] && continue
+        local host_port
+        host_port=$(echo "$cports" | grep -oP '\d+(?=->)' | head -1)
+        local chost
+        chost=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$cname" 2>/dev/null)
+        if [ -n "$host_port" ]; then
+          echo -e "  ${GREEN}${pub_ip}:${host_port}${NC}  ${CYAN}${cname}${NC}"
+        else
+          echo -e "  ${YELLOW}${chost:-?}${NC}  ${CYAN}${cname}${NC}"
+        fi
+      done < <(docker compose ps --format '{{.Name}}\t{{.Ports}}' 2>/dev/null)
       echo ""
       read -rp "Press Enter..."
       ;;
-     6)
+    6) setup_quality ;;
+    7) debug_system ;;
+    8)
       echo "Goodbye."
       exit 0
       ;;

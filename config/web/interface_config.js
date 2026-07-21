@@ -62,7 +62,7 @@ var interfaceConfig = {
 
     ENABLE_DIAL_OUT: true,
 
-    FILM_STRIP_MAX_HEIGHT: 120,
+    FILM_STRIP_MAX_HEIGHT: 240,
 
     GENERATE_ROOMNAMES_ON_WELCOME_PAGE: true,
 

@@ -5,7 +5,7 @@ import { useParams } from "next/navigation";
 import Link from "next/link";
 
 interface Video {
-  id: number; title: string; playerUrl: string; hlsUrl: string;
+  id: string | number; title: string; playerUrl: string; hlsUrl: string; thumbnailUrl?: string;
   createdAt: string; likeCount: number; commentCount: number;
 }
 interface Comment { id: number; username: string; text: string; createdAt: string; }
@@ -16,11 +16,12 @@ export default function WatchPage() {
   const [comments, setComments] = useState<Comment[]>([]);
   const [liked, setLiked] = useState(false);
   const [likeCount, setLikeCount] = useState(0);
+  const [moreVideos, setMoreVideos] = useState<Video[]>([]);
   const [commentName, setCommentName] = useState("");
   const [commentText, setCommentText] = useState("");
   const [error, setError] = useState("");
 
-  const videoId = Number(id);
+  const videoId = id;
 
   const fetchVideo = useCallback(async () => {
     const res = await fetch(`/api/videos/${videoId}`);
@@ -32,7 +33,12 @@ export default function WatchPage() {
     if (res.ok) setComments(await res.json());
   }, [videoId]);
 
-  useEffect(() => { fetchVideo(); fetchComments(); }, [fetchVideo, fetchComments]);
+  const fetchMore = useCallback(async () => {
+    const res = await fetch(`/api/videos?exclude=${videoId}`);
+    if (res.ok) setMoreVideos(await res.json());
+  }, [videoId]);
+
+  useEffect(() => { fetchVideo(); fetchComments(); fetchMore(); }, [fetchVideo, fetchComments, fetchMore]);
 
   const toggleLike = async () => {
     const res = await fetch(`/api/videos/${videoId}/like`, { method: "POST" });
@@ -172,13 +178,34 @@ export default function WatchPage() {
         {/* Sidebar */}
         <div className="lg:w-[360px] shrink-0">
           <div className="sticky top-[72px]">
-            <h3 className="text-sm font-semibold text-zinc-400 uppercase tracking-wider mb-3">More Videos</h3>
-            <Link href="/" className="flex items-center gap-2 text-sm text-violet-400 hover:text-violet-300 transition-colors">
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
-              </svg>
-              Back to all videos
-            </Link>
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="text-sm font-semibold text-zinc-400 uppercase tracking-wider">More Videos</h3>
+              <Link href="/" className="text-xs text-violet-400 hover:text-violet-300 transition-colors">View all</Link>
+            </div>
+            <div className="space-y-3">
+              {moreVideos.length === 0 && (
+                <p className="text-zinc-600 text-sm text-center py-8">No other videos yet.</p>
+              )}
+              {moreVideos.slice(0, 8).map((mv) => (
+                <Link key={String(mv.id)} href={`/watch/${mv.id}`} className="flex gap-3 group">
+                  <div className="relative w-40 shrink-0 aspect-video rounded-lg overflow-hidden bg-zinc-800">
+                    {mv.thumbnailUrl ? (
+                      <img src={mv.thumbnailUrl} alt="" className="w-full h-full object-cover" />
+                    ) : (
+                      <div className="w-full h-full bg-gradient-to-br from-violet-600/40 to-purple-700/40 flex items-center justify-center">
+                        <svg className="w-6 h-6 text-white/30" fill="currentColor" viewBox="0 0 24 24">
+                          <path d="M8 5v14l11-7z"/>
+                        </svg>
+                      </div>
+                    )}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium text-zinc-200 group-hover:text-violet-400 transition-colors line-clamp-2 leading-snug">{mv.title}</p>
+                    <p className="text-xs text-zinc-600 mt-1">{new Date(mv.createdAt).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}</p>
+                  </div>
+                </Link>
+              ))}
+            </div>
           </div>
         </div>
       </div>

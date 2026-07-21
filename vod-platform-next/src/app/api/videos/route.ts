@@ -1,26 +1,32 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "../../../db";
-import { videos } from "../../../db/schema";
+import { videos, videos as v } from "../../../db/schema";
 import { getAdminSession } from "../../../lib/auth";
 import { desc, eq } from "drizzle-orm";
 
-// GET /api/videos — return all videos (admin only)
-export async function GET() {
-  const isAdmin = await getAdminSession();
-  if (!isAdmin) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
+// GET /api/videos -- return visible videos from local DB (public)
+export async function GET(req: NextRequest) {
+  const { searchParams } = new URL(req.url);
+  const excludeId = searchParams.get("exclude");
 
-  const all = db
+  let rows = db
     .select()
-    .from(videos)
-    .orderBy(desc(videos.createdAt))
+    .from(v)
+    .where(eq(v.visible, 1))
+    .orderBy(desc(v.createdAt))
     .all();
 
-  return NextResponse.json(all);
+  if (excludeId) {
+    const numId = parseInt(excludeId, 10);
+    if (!isNaN(numId)) {
+      rows = rows.filter((r: any) => r.id !== numId);
+    }
+  }
+
+  return NextResponse.json(rows);
 }
 
-// POST /api/videos — add a new video (admin only)
+// POST /api/videos -- add a new video (admin only, local DB)
 export async function POST(req: NextRequest) {
   const isAdmin = await getAdminSession();
   if (!isAdmin) {
@@ -35,7 +41,6 @@ export async function POST(req: NextRequest) {
   }
 
   const { title, player_url, hls_url } = body;
-
   if (!title || !player_url) {
     return NextResponse.json(
       { error: "title and player_url are required" },

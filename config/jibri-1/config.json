@@ -4,7 +4,7 @@
       "flags": [
         "--use-fake-ui-for-media-stream",
         "--start-maximized",
-        "--kiosk",
+        "--window-size=1920,1080",
         "--autoplay-policy=no-user-gesture-required",
         "--ignore-certificate-errors",
         "--disable-gpu"

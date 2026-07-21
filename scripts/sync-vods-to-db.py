@@ -25,7 +25,6 @@ if not AUTH_VAL:
     print("[SYNC] ARVAN_API_KEY not set", flush=True)
     sys.exit(1)
 
-# Normalize: if it already has "Authorization:" prefix, just use it directly
 if AUTH_VAL.startswith("Authorization: "):
     AUTH_HEADER = AUTH_VAL
 else:
@@ -48,47 +47,87 @@ def fetch_videos(page=1):
 def main():
     conn = sqlite3.connect(DB_PATH, timeout=5)
     c = conn.cursor()
-    page, inserted, skipped = 1, 0, 0
+    page = 1
+    new_count, upd_count, skp_count, del_count = 0, 0, 0, 0
+
+    # Collect all ArvanCloud video IDs that currently exist remotely
+    remote_ids = set()
 
     while True:
         data = fetch_videos(page)
         if not data or "data" not in data:
             break
-        videos = data["data"]
-        if not videos:
+        items = data["data"]
+        if not items:
             break
 
-        for v in videos:
+        for v in items:
             pid = v["id"]
             title = v["title"]
-            player_url = v.get("player_url")
+            player_url = v.get("player_url") or ""
             hls_url = v.get("hls_playlist") or ""
             status = v.get("status")
             created_at = v.get("created_at", "")
 
+            if not pid:
+                continue
+            remote_ids.add(pid)
+
             if not player_url or status != "complete":
-                skipped += 1
+                skp_count += 1
                 continue
 
-            c.execute("SELECT id FROM videos WHERE player_url=?", (player_url,))
-            if c.fetchone():
+            # Look up by arvancloud_id
+            existing = c.execute(
+                "SELECT id, player_url, hls_url FROM videos WHERE arvancloud_id=?",
+                (pid,)
+            ).fetchone()
+
+            if existing:
+                vid, old_player_url, old_hls_url = existing
+                # Update player_url/hls_url if they changed (e.g. re-upload)
+                if old_player_url != player_url or old_hls_url != hls_url:
+                    c.execute(
+                        "UPDATE videos SET player_url=?, hls_url=?, title=? WHERE id=?",
+                        (player_url, hls_url, title, vid)
+                    )
+                    upd_count += 1
+                    print(f"[SYNC] Updated: {title} ({pid})", flush=True)
                 continue
 
             c.execute(
-                "INSERT INTO videos (title, player_url, hls_url, visible, created_at) VALUES (?, ?, ?, 1, ?)",
-                (title, player_url, hls_url, created_at),
+                "INSERT INTO videos (title, player_url, hls_url, arvancloud_id, visible, created_at) VALUES (?, ?, ?, ?, 1, ?)",
+                (title, player_url, hls_url, pid, created_at),
             )
             print(f"[SYNC] Inserted: {title} ({pid})", flush=True)
-            inserted += 1
+            new_count += 1
 
         meta = data.get("meta", {})
         if page >= meta.get("last_page", 1):
             break
         page += 1
 
+    # Delete entries whose arvancloud_id no longer exists on ArvanCloud
+    if remote_ids:
+        placeholders = ",".join("?" for _ in remote_ids)
+        stale = c.execute(
+            "SELECT id, title, arvancloud_id FROM videos WHERE arvancloud_id != '' AND arvancloud_id NOT IN ({})".format(placeholders),
+            list(remote_ids)
+        ).fetchall()
+    else:
+        stale = []
+
+    for row in stale:
+        vid, title, arid = row
+        c.execute("DELETE FROM likes WHERE video_id=?", (vid,))
+        c.execute("DELETE FROM comments WHERE video_id=?", (vid,))
+        c.execute("DELETE FROM videos WHERE id=?", (vid,))
+        print(f"[SYNC] Deleted stale: {title} (id={vid}, arvancloud={arid})", flush=True)
+        del_count += 1
+
     conn.commit()
     conn.close()
-    print(f"[SYNC] Done — {inserted} new, {skipped} incomplete/skipped", flush=True)
+    print(f"[SYNC] Done — {new_count} new, {upd_count} updated, {skp_count} skipped, {del_count} deleted", flush=True)
 
 if __name__ == "__main__":
     main()
