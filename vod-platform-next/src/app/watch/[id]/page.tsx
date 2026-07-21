@@ -177,7 +177,7 @@ export default function WatchPage() {
 
         {/* Sidebar */}
         <div className="lg:w-[360px] shrink-0">
-          <div className="sticky top-[72px] max-h-[calc(100vh-90px)] overflow-y-auto">
+          <div className="sticky top-[72px]">
             <div className="flex items-center justify-between mb-3">
               <h3 className="text-sm font-semibold text-zinc-400 uppercase tracking-wider">More Videos</h3>
               <Link href="/" className="text-xs text-violet-400 hover:text-violet-300 transition-colors">View all</Link>
@@ -186,7 +186,7 @@ export default function WatchPage() {
               {moreVideos.length === 0 && (
                 <p className="text-zinc-600 text-sm text-center py-8">No other videos yet.</p>
               )}
-              {moreVideos.map((mv) => (
+              {moreVideos.slice(0, 8).map((mv) => (
                 <Link key={String(mv.id)} href={`/watch/${mv.id}`} className="flex gap-3 group">
                   <div className="relative w-40 shrink-0 aspect-video rounded-lg overflow-hidden bg-zinc-800">
                     {mv.thumbnailUrl ? (
