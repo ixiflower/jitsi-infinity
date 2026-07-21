@@ -66,6 +66,7 @@ def main():
             title = v["title"]
             player_url = v.get("player_url") or ""
             hls_url = v.get("hls_playlist") or ""
+            thumbnail_url = v.get("thumbnail_url") or ""
             status = v.get("status")
             created_at = v.get("created_at", "")
 
@@ -79,25 +80,25 @@ def main():
 
             # Look up by arvancloud_id
             existing = c.execute(
-                "SELECT id, player_url, hls_url FROM videos WHERE arvancloud_id=?",
+                "SELECT id, player_url, hls_url, thumbnail_url FROM videos WHERE arvancloud_id=?",
                 (pid,)
             ).fetchone()
 
             if existing:
-                vid, old_player_url, old_hls_url = existing
-                # Update player_url/hls_url if they changed (e.g. re-upload)
-                if old_player_url != player_url or old_hls_url != hls_url:
+                vid, old_player_url, old_hls_url, old_thumb = existing
+                # Update if changed
+                if old_player_url != player_url or old_hls_url != hls_url or old_thumb != thumbnail_url:
                     c.execute(
-                        "UPDATE videos SET player_url=?, hls_url=?, title=? WHERE id=?",
-                        (player_url, hls_url, title, vid)
+                        "UPDATE videos SET player_url=?, hls_url=?, thumbnail_url=?, title=? WHERE id=?",
+                        (player_url, hls_url, thumbnail_url, title, vid)
                     )
                     upd_count += 1
                     print(f"[SYNC] Updated: {title} ({pid})", flush=True)
                 continue
 
             c.execute(
-                "INSERT INTO videos (title, player_url, hls_url, arvancloud_id, visible, created_at) VALUES (?, ?, ?, ?, 1, ?)",
-                (title, player_url, hls_url, pid, created_at),
+                "INSERT INTO videos (title, player_url, hls_url, thumbnail_url, arvancloud_id, visible, created_at) VALUES (?, ?, ?, ?, ?, 1, ?)",
+                (title, player_url, hls_url, thumbnail_url, pid, created_at),
             )
             print(f"[SYNC] Inserted: {title} ({pid})", flush=True)
             new_count += 1

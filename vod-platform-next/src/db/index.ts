@@ -22,6 +22,8 @@ sqlite.exec(`
     title TEXT NOT NULL,
     player_url TEXT NOT NULL,
     hls_url TEXT DEFAULT '',
+    arvancloud_id TEXT DEFAULT '',
+    thumbnail_url TEXT DEFAULT '',
     visible INTEGER DEFAULT 1,
     created_at TEXT DEFAULT CURRENT_TIMESTAMP
   );

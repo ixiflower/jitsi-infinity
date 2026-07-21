@@ -13,6 +13,8 @@ export const videos = sqliteTable("videos", {
   title: text("title").notNull(),
   playerUrl: text("player_url").notNull(),
   hlsUrl: text("hls_url").default(""),
+  arvancloudId: text("arvancloud_id").default(""),
+  thumbnailUrl: text("thumbnail_url").default(""),
   visible: integer("visible").default(1),
   createdAt: text("created_at").default(sql`CURRENT_TIMESTAMP`),
 });

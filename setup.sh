@@ -915,6 +915,58 @@ do_release() {
   read -rp "Press Enter..."
 }
 
+# ── VOD Platform Management ──
+manage_vod() {
+  local mode
+  mode=$(detect_mode)
+  if [ "$mode" = "none" ]; then
+    echo -e "${RED}Configure Jitsi first (option 1).${NC}"
+    read -rp "Press Enter..."
+    return
+  fi
+
+  while true; do
+    local vod_pid
+    vod_pid=$(pm2 list 2>/dev/null | grep "vod-platform" | awk '{print $2}')
+    local vod_url="http://37.32.20.70:5050"
+    echo -e "\n${CYAN}── VOD Platform ──${NC}"
+    echo -e "  Status:  $( [ -n "$vod_pid" ] && echo -e "${GREEN}Running${NC}" || echo -e "${RED}Stopped${NC}" )"
+    [ -n "$vod_pid" ] && echo -e "  URL:     ${CYAN}${vod_url}${NC}"
+    echo -e "  Videos:  $(curl -s ${vod_url}/api/videos 2>/dev/null | python3 -c "import sys,json; print(len(json.load(sys.stdin)))" 2>/dev/null || echo '?')"
+    echo ""
+    echo "  1) Start VOD Platform"
+    echo "  2) Stop VOD Platform"
+    echo "  3) Restart VOD Platform"
+    echo "  4) Sync videos from ArvanCloud (run now)"
+    echo "  5) View sync logs"
+    echo "  6) Back"
+    echo ""
+    read -rp "Choice [1/2/3/4/5/6]: " vc
+    case "$vc" in
+      1)
+        cd "$SCRIPT_DIR/vod-platform-app" && pm2 start server.js --name vod-platform 2>/dev/null
+        echo -e "${GREEN}VOD started${NC}" ;;
+      2)
+        pm2 stop vod-platform 2>/dev/null
+        echo -e "${YELLOW}VOD stopped${NC}" ;;
+      3)
+        pm2 restart vod-platform 2>/dev/null
+        echo -e "${GREEN}VOD restarted${NC}" ;;
+      4)
+        echo -e "${YELLOW}Syncing from ArvanCloud...${NC}"
+        python3 "$SCRIPT_DIR/scripts/sync-vods-to-db.py" 2>&1
+        echo -e "${GREEN}Done${NC}" ;;
+      5)
+        tail -30 "$SCRIPT_DIR/logs/sync-vods.log" 2>/dev/null || echo -e "${RED}No logs yet${NC}"
+        echo "" ;;
+      6) return ;;
+      *) echo -e "${RED}Invalid${NC}"; sleep 1 ;;
+    esac
+    echo ""
+    read -rp "Press Enter..."
+  done
+}
+
 # ── Main Menu ──
 main_menu() {
   while true; do
@@ -936,9 +988,10 @@ main_menu() {
     echo "  5) View All Running Containers"
     echo "  6) Video Quality Settings"
     echo "  7) Debug & Self-Heal"
-    echo "  8) Exit"
+    echo "  8) VOD Platform Management"
+    echo "  9) Exit"
     echo ""
-    read -rp "Choice [1/2/3/4/5/6/7/8]: " CHOICE
+    read -rp "Choice [1-9]: " CHOICE
     case "$CHOICE" in
     1) setup_jitsi ;;
     2)
@@ -989,7 +1042,8 @@ main_menu() {
       ;;
     6) setup_quality ;;
     7) debug_system ;;
-    8)
+    8) manage_vod ;;
+    9)
       echo "Goodbye."
       exit 0
       ;;
