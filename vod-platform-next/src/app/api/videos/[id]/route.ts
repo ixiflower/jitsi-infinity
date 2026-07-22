@@ -65,9 +65,16 @@ export async function PATCH(
     return NextResponse.json({ error: "Not found" }, { status: 404 });
   }
 
+  const body = await req.json().catch(() => ({}));
+  const updates: Record<string, any> = {};
+  if (body.visible !== undefined) updates.visible = body.visible ? 1 : 0;
+  else updates.visible = video.visible ? 0 : 1;
+  if (body.title) updates.title = body.title;
+  if (body.thumbnail_url !== undefined) updates.thumbnailUrl = body.thumbnail_url;
+
   const updated = db
     .update(videos)
-    .set({ visible: video.visible ? 0 : 1 })
+    .set(updates)
     .where(eq(videos.id, id))
     .returning()
     .get();
