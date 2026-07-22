@@ -48,12 +48,6 @@ export default function AdminDashboard() {
     if (res.ok) fetchVideos();
   };
 
-  const deleteVideo = async (id: number) => {
-    if (!confirm("Delete this video permanently?")) return;
-    const res = await fetch(`/api/videos/${id}`, { method: "DELETE" });
-    if (res.ok) fetchVideos();
-  };
-
   const syncNow = async () => {
     setSyncing(true);
     setSyncMsg("");
@@ -123,6 +117,12 @@ export default function AdminDashboard() {
           <p className="text-sm text-zinc-500 mt-1">Manage your video content</p>
         </div>
         <div className="flex items-center gap-3">
+          <button onClick={syncNow} disabled={syncing}
+            className="px-4 py-2 rounded-lg text-sm font-medium bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white transition-colors flex items-center gap-2">
+            {syncing ? (
+              <><div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"/> Syncing...</>
+            ) : "Sync Now"}
+          </button>
           <Link href="/" className="px-4 py-2 rounded-lg text-sm font-medium bg-white/[0.06] text-zinc-300 hover:bg-white/[0.12] transition-all">
             View Site
           </Link>
@@ -148,16 +148,6 @@ export default function AdminDashboard() {
             <p className="text-sm text-zinc-500">{stat.label}</p>
           </div>
         ))}
-      </div>
-
-      {/* Actions bar */}
-      <div className="flex flex-wrap gap-3 mb-8">
-        <button onClick={syncNow} disabled={syncing}
-          className="px-5 py-2.5 rounded-lg text-sm font-medium bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white transition-colors flex items-center gap-2">
-          {syncing ? (
-            <><div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"/> Syncing...</>
-          ) : "Sync Now"}
-        </button>
       </div>
 
       {/* Add Video Form */}
@@ -217,9 +207,7 @@ export default function AdminDashboard() {
                   <button onClick={() => uploadThumb(v.id)} className="px-3 py-1.5 rounded-lg text-xs font-medium bg-white/[0.06] text-zinc-400 hover:bg-white/[0.12] hover:text-white transition-all">
                     Thumbnail
                   </button>
-                  <button onClick={() => deleteVideo(v.id)} className="px-3 py-1.5 rounded-lg text-xs font-medium bg-red-950/30 text-red-400 hover:bg-red-950/50 transition-all">
-                    Delete
-                  </button>
+
                 </div>
               </div>
             </div>
