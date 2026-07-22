@@ -911,6 +911,132 @@ setup_quality() {
   done
 }
 
+# ── Jibri Server Location (Local / Remote) ──
+setup_jibri_location() {
+  local mode
+  mode=$(detect_mode)
+  if [ "$mode" = "none" ]; then
+    echo -e "${RED}Configure Jitsi first (option 1).${NC}"
+    return
+  fi
+
+  echo -e "\n${CYAN}── Jibri Server Location ──${NC}"
+  echo ""
+  echo "  Where should Jibri recording containers run?"
+  echo "  1) Local — same server as Jitsi (default)"
+  echo "  2) Remote — dedicated server (saves CPU on main server)"
+  echo ""
+  read -rp "Choice [1/2]: " jloc
+
+  if [ "$jloc" = "2" ]; then
+    echo ""
+    read -rp "Remote server IP: " REMOTE_IP
+    read -rp "SSH username [root]: " SSH_USER
+    SSH_USER="${SSH_USER:-root}"
+    read -rsp "SSH password: " SSH_PASS
+    echo ""
+
+    local MAIN_IP
+    MAIN_IP=$(curl -s --max-time 3 ifconfig.me 2>/dev/null || ip route get 1 | awk '{print $7; exit}' 2>/dev/null || echo "")
+
+    if [ -z "$MAIN_IP" ]; then
+      echo -e "${RED}Could not detect public IP of this server. Aborting.${NC}"
+      read -rp "Press Enter..."
+      return
+    fi
+
+    if ! command -v sshpass &>/dev/null; then
+      echo -e "${YELLOW}Installing sshpass...${NC}"
+      sudo apt install -y sshpass 2>/dev/null || true
+    fi
+
+    echo -e "\n${YELLOW}[1/4] Installing Docker on remote server...${NC}"
+    sshpass -p "$SSH_PASS" ssh -o StrictHostKeyChecking=no "${SSH_USER}@${REMOTE_IP}" \
+      "if ! command -v docker &>/dev/null; then curl -fsSL https://get.docker.com | sh; sudo usermod -aG docker \$SSH_USER; fi" 2>&1
+
+    echo -e "\n${YELLOW}[2/4] Creating directories on remote server...${NC}"
+    sshpass -p "$SSH_PASS" ssh -o StrictHostKeyChecking=no "${SSH_USER}@${REMOTE_IP}" \
+      "mkdir -p /opt/jitsi-jibri/recordings" 2>&1
+
+    local count
+    count=$(grep -E "^JIBRI_COUNT=" .env 2>/dev/null | cut -d= -f2-)
+    count="${count:-3}"
+
+    echo -e "\n${YELLOW}[3/4] Generating and copying configuration...${NC}"
+    local REMOTE_COMPOSE="/tmp/docker-compose.jibri-remote.yml"
+    cat > "$REMOTE_COMPOSE" << 'COMPOSE'
+services:
+COMPOSE
+    for i in $(seq 1 "$count"); do
+      cat >> "$REMOTE_COMPOSE" << EOS
+  jibri-${i}:
+    image: jitsi/jibri:\${JITSI_IMAGE_VERSION:-unstable}
+    restart: unless-stopped
+    container_name: jitsi-jibri-${i}
+    shm_size: 2gb
+    cap_add:
+      - SYS_ADMIN
+    env_file: .env.jibri
+    volumes:
+      - ./config/jibri-\${i}:/config
+      - ./recordings:/recordings
+    environment:
+      - JIBRI_INSTANCE_ID=${i}
+    network_mode: host
+EOS
+    done
+
+    local REMOTE_ENV="/tmp/.env.jibri.remote.$$"
+    cp .env.jibri "$REMOTE_ENV"
+    sed -i "s/^XMPP_SERVER=.*/XMPP_SERVER=${MAIN_IP}/" "$REMOTE_ENV"
+    local pub_url
+    pub_url=$(grep -E "^PUBLIC_URL=" .env 2>/dev/null | cut -d= -f2-)
+    if [ -n "$pub_url" ] && grep -q "^PUBLIC_URL=" "$REMOTE_ENV" 2>/dev/null; then
+      sed -i "s|^PUBLIC_URL=.*|PUBLIC_URL=${pub_url}|" "$REMOTE_ENV"
+    fi
+
+    sshpass -p "$SSH_PASS" scp -o StrictHostKeyChecking=no "$REMOTE_COMPOSE" "${SSH_USER}@${REMOTE_IP}:/opt/jitsi-jibri/docker-compose.yml" 2>&1
+    sshpass -p "$SSH_PASS" scp -o StrictHostKeyChecking=no "$REMOTE_ENV" "${SSH_USER}@${REMOTE_IP}:/opt/jitsi-jibri/.env.jibri" 2>&1
+    rm -f "$REMOTE_COMPOSE" "$REMOTE_ENV"
+
+    echo -e "\n${YELLOW}[4/4] Starting Jibri containers on remote server...${NC}"
+    sshpass -p "$SSH_PASS" ssh -o StrictHostKeyChecking=no "${SSH_USER}@${REMOTE_IP}" \
+      "cd /opt/jitsi-jibri && for i in \$(seq 1 ${count}); do mkdir -p config/jibri-\$i; done && docker compose up -d && echo '' && docker compose ps --format 'table {{.Names}}\t{{.Status}}'" 2>&1
+
+    if grep -q "^JIBRI_REMOTE_SERVER=" .env 2>/dev/null; then
+      sed -i "s/^JIBRI_REMOTE_SERVER=.*/JIBRI_REMOTE_SERVER=${REMOTE_IP}/" .env
+    else
+      echo "JIBRI_REMOTE_SERVER=${REMOTE_IP}" >> .env
+    fi
+
+    echo ""
+    echo -e "${GREEN}✓ Remote Jibri setup complete!${NC}"
+    echo ""
+    echo -e "  ${YELLOW}IMPORTANT:${NC}"
+    echo -e "  Make sure the remote server (${REMOTE_IP}) can reach:"
+    echo -e "    - ${CYAN}${MAIN_IP}:5222${NC}  (XMPP c2s — Prosody)"
+    echo -e "    - ${CYAN}${pub_url}${NC}  (Jitsi web)"
+    echo ""
+    echo -e "  ${YELLOW}Remote Jibri will appear in Jicofo\'s brewery after connection.${NC}"
+    echo -e "  Use ${CYAN}option 7 (Debug)${NC} to verify they joined the MUC."
+    echo ""
+  else
+    echo -e "\n${YELLOW}Using local Jibri...${NC}"
+    local count
+    count=$(grep -E "^JIBRI_COUNT=" .env 2>/dev/null | cut -d= -f2-)
+    count="${count:-3}"
+    grep -q "^JIBRI_COUNT=" .env 2>/dev/null && sed -i "s/^JIBRI_COUNT=.*/JIBRI_COUNT=${count}/" .env || echo "JIBRI_COUNT=${count}" >>.env
+    generate_jibri_pool
+    docker rm -f $(docker ps -a --filter "name=jibri" --format "{{.Names}}" 2>/dev/null) 2>/dev/null
+    docker compose -f docker-compose.yml -f jibri-pool.yml up -d 2>&1
+    sed -i '/^JIBRI_REMOTE_SERVER=/d' .env 2>/dev/null || true
+    echo -e "${GREEN}✓ Jibri switched to local mode${NC}"
+  fi
+
+  read -rp "Press Enter..."
+}
+
+
 # ── Release ──
 do_release() {
   local mode
@@ -1040,13 +1166,14 @@ main_menu() {
     echo "  2) Regenerate & Change Jibri Pool Count (jibri-pool.yml)"
     echo "  3) Setup Stress Test Client"
     echo "  4) Toggle Services (Grafana / Portainer)"
-    echo "  5) View All Running Containers"
-    echo "  6) Video Quality Settings"
-    echo "  7) Debug & Self-Heal"
-    echo "  8) VOD Platform Management"
-    echo "  9) Exit"
+    echo "  5) Jibri Server Location (local / remote)"
+    echo "  6) View All Running Containers"
+    echo "  7) Video Quality Settings"
+    echo "  8) Debug & Self-Heal"
+    echo "  9) VOD Platform Management"
+    echo "  10) Exit"
     echo ""
-    read -rp "Choice [1-9]: " CHOICE
+    read -rp "Choice [1-10]: " CHOICE
     case "$CHOICE" in
     1) setup_jitsi ;;
     2)
@@ -1076,7 +1203,8 @@ main_menu() {
       ;;
     3) setup_stress_test ;;
     4) setup_monitoring ;;
-     5)
+    5) setup_jibri_location ;;
+     6)
       echo ""
       local pub_ip
       pub_ip=$(curl -s --max-time 3 ifconfig.me 2>/dev/null || ip route get 1 | awk '{print $7; exit}' 2>/dev/null || echo "127.0.0.1")
@@ -1095,10 +1223,10 @@ main_menu() {
       echo ""
       read -rp "Press Enter..."
       ;;
-    6) setup_quality ;;
-    7) debug_system ;;
-    8) manage_vod ;;
-    9)
+    7) setup_quality ;;
+    8) debug_system ;;
+    9) manage_vod ;;
+    10)
       echo "Goodbye."
       exit 0
       ;;
