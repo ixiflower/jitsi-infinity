@@ -76,6 +76,8 @@ def main():
 
             if not player_url or status != "complete":
                 skp_count += 1
+                # Remove from remote_ids so incomplete videos get cleaned up locally
+                remote_ids.discard(pid)
                 continue
 
             # Look up by arvancloud_id
