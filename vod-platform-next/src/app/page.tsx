@@ -44,13 +44,6 @@ export default async function HomePage({
 
   return (
     <main className="max-w-[1720px] mx-auto px-4 sm:px-6 py-6">
-      {/* Search */}
-      <form method="GET" action="/" className="mb-6">
-        <input type="text" name="q" defaultValue={query} placeholder="Search videos by title..."
-          className="w-full bg-white/[0.06] border border-white/[0.08] rounded-xl px-4 py-3 text-sm text-zinc-200 placeholder:text-zinc-600 focus:outline-none focus:border-violet-500/50 focus:ring-1 focus:ring-violet-500/30 transition-all"
-        />
-      </form>
-
       {rows.length === 0 ? (
         <div className="flex flex-col items-center justify-center py-32 text-zinc-500">
           <div className="w-24 h-24 rounded-full bg-white/[0.04] flex items-center justify-center mb-6">

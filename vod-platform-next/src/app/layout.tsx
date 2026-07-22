@@ -25,16 +25,13 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               </span>
             </Link>
 
+            <form method="GET" action="/" className="flex-1 max-w-md mx-4">
+              <input type="text" name="q" placeholder="Search videos..."
+                className="w-full bg-white/[0.06] border border-white/[0.08] rounded-lg px-3 py-1.5 text-sm text-zinc-200 placeholder:text-zinc-600 focus:outline-none focus:border-violet-500/50 focus:ring-1 focus:ring-violet-500/30 transition-all"
+              />
+            </form>
+
             <div className="flex items-center gap-3">
-              <Link
-                href="/admin/login"
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm font-medium text-zinc-400 hover:text-white hover:bg-white/[0.08] transition-all"
-              >
-                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
-                </svg>
-                <span className="hidden sm:inline">Admin</span>
-              </Link>
             </div>
           </div>
         </header>
