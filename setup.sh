@@ -510,9 +510,14 @@ debug_system() {
   echo -e "${CYAN}══════════════════════════════════════${NC}\n"
 
   local issues=0 fixed=0
+  local pub_ip
+  pub_ip=$(curl -s --max-time 3 ifconfig.me 2>/dev/null || ip route get 1 | awk '{print $7; exit}' 2>/dev/null || echo "127.0.0.1")
 
-  # ── 1. Check containers ──
-  echo -e "${YELLOW}[1/10] Checking containers...${NC}"
+  # helper — safe docker logs (tail only)
+  log_grep() { docker logs --tail 200 "$1" 2>&1 | grep -q "$2" 2>/dev/null; return $?; }
+
+  # ── 1. Containers ──
+  echo -e "${YELLOW}[1/12] Checking containers...${NC}"
   local missing=""
   for c in jitsi-web jitsi-prosody jitsi-jicofo jitsi-jvb jitsi-jibri-1; do
     if ! docker ps --format "{{.Names}}" 2>/dev/null | grep -q "$c"; then
@@ -529,114 +534,85 @@ debug_system() {
     echo -e "  ${GREEN}✓ All core containers running${NC}"
   fi
 
-  # ── 2. Check Jibri MUC join ──
-  echo -e "\n${YELLOW}[2/10] Checking Jibri recording nodes...${NC}"
+  # ── 2. Jibri MUC ──
+  echo -e "\n${YELLOW}[2/12] Checking Jibri recording nodes...${NC}"
   local jibri_ok=0 jibri_total=0
   for c in $(docker ps --filter "name=jibri" --format "{{.Names}}" 2>/dev/null); do
-    ((jibri_total++))
-    if docker logs "$c" 2>&1 | grep -q "Joined MUC: jibribrewery"; then
-      ((jibri_ok++))
+    jibri_total=$((jibri_total + 1))
+    if log_grep "$c" "Joined MUC: jibribrewery"; then
+      jibri_ok=$((jibri_ok + 1))
     fi
   done
   if [ "$jibri_total" -eq 0 ]; then
-    echo -e "  ${RED}✗ No Jibri containers found${NC}"
+    echo -e "  ${RED}✗ No Jibri containers${NC}"
     ((issues++))
   elif [ "$jibri_ok" -lt "$jibri_total" ]; then
-    echo -e "  ${RED}✗ $jibri_ok/$jibri_total Jibris joined MUC${NC}"
-    echo -e "  ${YELLOW}→ Recreating Jibri containers...${NC}"
+    echo -e "  ${RED}✗ $jibri_ok/$jibri_total joined MUC — recreating${NC}"
     cd "$SCRIPT_DIR" && docker compose -f docker-compose.yml -f jibri-pool.yml up -d --force-recreate $(docker ps --filter "name=jibri" --format "{{.Names}}" 2>/dev/null) 2>/dev/null
     ((issues++))
   else
     echo -e "  ${GREEN}✓ All $jibri_total Jibris connected${NC}"
   fi
 
-  # ── 3. Check Jibri auth (SASL not-authorized) ──
-  echo -e "\n${YELLOW}[3/10] Checking Jibri XMPP authentication...${NC}"
+  # ── 3. Jibri auth ──
+  echo -e "\n${YELLOW}[3/12] Checking Jibri XMPP authentication...${NC}"
   local auth_fail=0
   for c in $(docker ps --filter "name=jibri" --format "{{.Names}}" 2>/dev/null | head -1); do
-    if docker logs "$c" 2>&1 | grep -q "SASLError using SCRAM-SHA-1: not-authorized"; then
+    if log_grep "$c" "not-authorized"; then
       auth_fail=1
     fi
   done
   if [ "$auth_fail" = "1" ]; then
-    echo -e "  ${RED}✗ Jibri authentication failed (password mismatch)${NC}"
-    echo -e "  ${YELLOW}→ Re-registering Jibri & Recorder users in Prosody...${NC}"
-    local jibri_pass recorder_pass
-    jibri_pass=$(grep -E "^JIBRI_XMPP_PASSWORD=" .env 2>/dev/null | cut -d= -f2-)
-    recorder_pass=$(grep -E "^JIBRI_RECORDER_PASSWORD=" .env 2>/dev/null | cut -d= -f2-)
-    if [ -z "$jibri_pass" ]; then jibri_pass=$(grep -E "^JIBRI_XMPP_PASSWORD=" .env.jibri 2>/dev/null | cut -d= -f2-); fi
-    if [ -z "$recorder_pass" ]; then recorder_pass=$(grep -E "^JIBRI_RECORDER_PASSWORD=" .env.jibri 2>/dev/null | cut -d= -f2-); fi
-    if [ -n "$jibri_pass" ]; then
-      docker exec jitsi-prosody prosodyctl --config /config/prosody.cfg.lua register jibri auth.meet.jitsi "$jibri_pass" 2>/dev/null
-      echo -e "  ${GREEN}  → jibri user re-registered${NC}"
-      ((fixed++))
-    fi
-    if [ -n "$recorder_pass" ]; then
-      docker exec jitsi-prosody prosodyctl --config /config/prosody.cfg.lua register recorder hidden.meet.jitsi "$recorder_pass" 2>/dev/null
-      echo -e "  ${GREEN}  → recorder user re-registered${NC}"
-      ((fixed++))
-    fi
-    echo -e "  ${YELLOW}→ Recreating Jibri containers...${NC}"
+    echo -e "  ${RED}✗ Auth failed${NC}"
+    local jp rp
+    jp=$(grep -E "^JIBRI_XMPP_PASSWORD=" .env.jibri 2>/dev/null | cut -d= -f2-)
+    rp=$(grep -E "^JIBRI_RECORDER_PASSWORD=" .env.jibri 2>/dev/null | cut -d= -f2-)
+    [ -n "$jp" ] && docker exec jitsi-prosody prosodyctl --config /config/prosody.cfg.lua register jibri auth.meet.jitsi "$jp" 2>/dev/null && ((fixed++))
+    [ -n "$rp" ] && docker exec jitsi-prosody prosodyctl --config /config/prosody.cfg.lua register recorder hidden.meet.jitsi "$rp" 2>/dev/null && ((fixed++))
     cd "$SCRIPT_DIR" && docker compose -f docker-compose.yml -f jibri-pool.yml up -d --force-recreate $(docker ps --filter "name=jibri" --format "{{.Names}}" 2>/dev/null) 2>/dev/null
     ((issues++))
   else
-    echo -e "  ${GREEN}✓ Jibri authentication OK${NC}"
+    echo -e "  ${GREEN}✓ Jibri auth OK${NC}"
   fi
 
-  # ── 4. Check JVB bridge status ──
-  echo -e "\n${YELLOW}[4/10] Checking JVB Video Bridge...${NC}"
-  local jvb_joined
-  jvb_joined=$(docker logs jitsi-jvb 2>&1 | grep -c "Joined MUC: jvbbrewery" 2>/dev/null || echo 0)
-  if [ "$jvb_joined" -eq 0 ]; then
-    echo -e "  ${RED}✗ JVB not connected to brewery MUC${NC}"
-    echo -e "  ${YELLOW}→ Recreating JVB container...${NC}"
+  # ── 4. JVB bridge ──
+  echo -e "\n${YELLOW}[4/12] Checking JVB Video Bridge...${NC}"
+  if log_grep jitsi-jvb "Joined MUC: jvbbrewery"; then
+    echo -e "  ${GREEN}✓ JVB connected to brewery${NC}"
+  else
+    echo -e "  ${RED}✗ JVB not connected${NC}"
     cd "$SCRIPT_DIR" && docker compose up -d --force-recreate jvb 2>/dev/null
     ((issues++))
-  else
-    echo -e "  ${GREEN}✓ JVB connected to brewery${NC}"
   fi
-
-  local no_bridge
-  no_bridge=$(docker logs jitsi-jicofo 2>&1 | grep "no operational bridges" | tail -1)
-  if [ -n "$no_bridge" ]; then
-    echo -e "  ${RED}✗ Jicofo reports 'no operational bridges'${NC}"
-    echo -e "  ${YELLOW}→ Restarting Jicofo to re-register JVB...${NC}"
+  if log_grep jitsi-jicofo "no operational bridges"; then
+    echo -e "  ${RED}✗ jicofo: no operational bridges${NC}"
     cd "$SCRIPT_DIR" && docker compose restart jicofo 2>/dev/null
-    ((issues++))
-    ((fixed++))
+    ((issues++)); ((fixed++))
   else
     echo -e "  ${GREEN}✓ Jicofo sees operational bridge${NC}"
   fi
 
-  # ── 5. Check JVB port mapping ──
-  echo -e "\n${YELLOW}[5/10] Checking JVB UDP port (10000)...${NC}"
-  local port_ok
-  port_ok=$(ss -tulpn 2>/dev/null | grep ":10000 " || echo "")
-  if [ -z "$port_ok" ]; then
-    echo -e "  ${RED}✗ JVB port 10000/udp not listening${NC}"
-    echo -e "  ${YELLOW}→ Recreating JVB container...${NC}"
+  # ── 5. JVB port 10000 ──
+  echo -e "\n${YELLOW}[5/12] Checking JVB UDP port 10000...${NC}"
+  if ss -tulpn 2>/dev/null | grep -q ":10000 "; then
+    echo -e "  ${GREEN}✓ Port 10000 listening${NC}"
+  else
+    echo -e "  ${RED}✗ Port 10000 not listening${NC}"
     cd "$SCRIPT_DIR" && docker compose up -d --force-recreate jvb 2>/dev/null
     ((issues++))
-  else
-    local dnat_ok
-    dnat_ok=$(iptables -t nat -L -n 2>/dev/null | grep "udp dpt:10000" || echo "")
-    if [ -z "$dnat_ok" ]; then
-      echo -e "  ${YELLOW}⚠ Port 10000 listening but no DNAT rule${NC}"
-      echo -e "  ${YELLOW}→ May need Docker restart...${NC}"
-    else
-      echo -e "  ${GREEN}✓ Port 10000 mapped: $(echo "$dnat_ok" | head -1 | sed 's/.*to://')${NC}"
-    fi
   fi
 
-  # ── 6. Check Colibri WebSocket proxy ──
-  echo -e "\n${YELLOW}[6/10] Checking Colibri WebSocket relay (TCP fallback)...${NC}"
-  local ws_conf
-  ws_conf=$(docker exec jitsi-web cat /config/nginx-custom/colibri-ws.conf 2>/dev/null || echo "")
-  if [ -z "$ws_conf" ]; then
-    echo -e "  ${YELLOW}⚠ Colibri WebSocket proxy not configured${NC}"
-    echo -e "  ${YELLOW}→ Creating nginx-custom config...${NC}"
-    mkdir -p "$(get_cfg)/web/nginx-custom" 2>/dev/null
-    cat > "$(get_cfg)/web/nginx-custom/colibri-ws.conf" << 'EOF'
+  # ── 6. Colibri WS proxy ──
+  echo -e "\n${YELLOW}[6/12] Checking Colibri WebSocket relay...${NC}"
+  if docker exec jitsi-web cat /config/nginx-custom/colibri-ws.conf &>/dev/null; then
+    echo -e "  ${GREEN}✓ WebSocket relay configured${NC}"
+  else
+    echo -e "  ${YELLOW}⚠ Missing — creating...${NC}"
+    local ws_dir
+    ws_dir=$(docker inspect -f '{{range .Mounts}}{{if eq .Destination "/config"}}{{.Source}}{{end}}{{end}}' jitsi-web 2>/dev/null)
+    if [ -n "$ws_dir" ]; then
+      mkdir -p "$ws_dir/nginx-custom" 2>/dev/null
+      cat > "$ws_dir/nginx-custom/colibri-ws.conf" << 'EOF'
 location ~ ^/colibri-ws(/.*)?$ {
     proxy_pass http://jitsi-jvb:8080/colibri-ws$1$is_args$args;
     proxy_http_version 1.1;
@@ -650,72 +626,109 @@ location ~ ^/colibri-ws(/.*)?$ {
     proxy_send_timeout 86400s;
 }
 EOF
-    docker exec jitsi-web nginx -s reload 2>/dev/null || cd "$SCRIPT_DIR" && docker compose restart web 2>/dev/null
+    fi
+    docker exec jitsi-web nginx -s reload &>/dev/null || cd "$SCRIPT_DIR" && docker compose restart web 2>/dev/null
     ((fixed++))
-  else
-    echo -e "  ${GREEN}✓ WebSocket relay configured${NC}"
   fi
 
-  # ── 7. Check P2P (should be disabled for server) ──
-  echo -e "\n${YELLOW}[7/10] Checking P2P mode...${NC}"
-  local p2p_enabled
-  p2p_enabled=$(grep -c "enabled: true" config/web/config.js 2>/dev/null || echo 0)
-  if [ "$p2p_enabled" -gt 0 ] && [ "$mode" = "server" ]; then
-    echo -e "  ${YELLOW}⚠ P2P enabled on server — can cause camera issues${NC}"
-    echo -e "  ${YELLOW}→ Disabling P2P...${NC}"
+  # ── 7. P2P ──
+  echo -e "\n${YELLOW}[7/12] Checking P2P mode...${NC}"
+  if grep -q "enabled: true" config/web/config.js 2>/dev/null && [ "$mode" = "server" ]; then
+    echo -e "  ${YELLOW}⚠ P2P enabled — disabling${NC}"
     sed -i 's/enabled: true/enabled: false/' config/web/config.js 2>/dev/null
     ((fixed++))
   else
-    echo -e "  ${GREEN}✓ P2P disabled (recommended for server)${NC}"
+    echo -e "  ${GREEN}✓ P2P disabled${NC}"
   fi
 
-  # ── 8. Check recording quality (not too heavy) ──
-  echo -e "\n${YELLOW}[8/10] Checking recording quality settings...${NC}"
-  local preset
+  # ── 8. Recording quality ──
+  echo -e "\n${YELLOW}[8/12] Checking recording quality...${NC}"
+  local preset crf
   preset=$(grep -E "^JIBRI_RECORDING_VIDEO_ENCODE_PRESET_RECORDING=" .env.jibri 2>/dev/null | cut -d= -f2-)
-  if [ "$preset" = "medium" ] || [ "$preset" = "slow" ] || [ "$preset" = "slower" ]; then
-    echo -e "  ${YELLOW}⚠ Recording preset '$preset' may overload CPU${NC}"
-    echo -e "  ${YELLOW}→ Suggest changing to 'veryfast' or 'faster'${NC}"
-    ((issues++))
-  else
-    echo -e "  ${GREEN}✓ Preset '$preset' is CPU-safe${NC}"
-  fi
+  crf=$(grep -E "^JIBRI_RECORDING_CONSTANT_RATE_FACTOR=" .env.jibri 2>/dev/null | cut -d= -f2-)
+  case "$preset" in medium|slow|slower)
+    echo -e "  ${YELLOW}⚠ Preset '$preset' may overload CPU${NC}"
+    ((issues++));;
+    *) echo -e "  ${GREEN}✓ Preset $preset, CRF $crf${NC}";;
+  esac
 
-  # ── 9. Check STUN/TURN ──
-  echo -e "\n${YELLOW}[9/10] Checking STUN/TURN configuration...${NC}"
+  # ── 9. STUN ──
+  echo -e "\n${YELLOW}[9/12] Checking STUN/TURN...${NC}"
   local stun
   stun=$(grep -E "^JVB_STUN_SERVERS=" .env 2>/dev/null | cut -d= -f2-)
   if [ -z "$stun" ]; then
-    echo -e "  ${YELLOW}⚠ No STUN servers configured for JVB${NC}"
-    echo -e "  ${YELLOW}→ Adding Google STUN servers...${NC}"
+    echo -e "  ${YELLOW}⚠ No STUN — adding${NC}"
     echo 'JVB_STUN_SERVERS=stun.l.google.com:19302,stun1.l.google.com:19302' >> .env
     ((fixed++))
   else
     echo -e "  ${GREEN}✓ STUN: $stun${NC}"
   fi
 
-  # ── 10. Check JVB_ADVERTISE_IPS ──
-  echo -e "\n${YELLOW}[10/10] Checking JVB advertise IP...${NC}"
-  local adv_ip
-  adv_ip=$(grep -E "^JVB_ADVERTISE_IPS=" .env 2>/dev/null | cut -d= -f2-)
-  if [ "$mode" = "server" ] && [ -z "$adv_ip" ]; then
-    local detected
-    detected=$(ip route get 1 | awk '{print $7; exit}' 2>/dev/null || echo "")
-    if [ -n "$detected" ]; then
-      echo -e "  ${YELLOW}⚠ JVB_ADVERTISE_IPS not set (needed for external clients)${NC}"
-      echo -e "  ${YELLOW}→ Setting to $detected...${NC}"
-      echo "JVB_ADVERTISE_IPS=$detected" >> .env
-      ((fixed++))
+  # ── 10. ArvanCloud ──
+  echo -e "\n${YELLOW}[10/12] Checking ArvanCloud connection...${NC}"
+  local arvan_key
+  arvan_key=$(grep -E "^ARVANCLOUD_API_KEY=" .env 2>/dev/null || grep -E "^ARVANCLOUD_API_KEY=" scripts/sync-vods-to-db.py 2>/dev/null | head -1)
+  if [ -z "$arvan_key" ]; then
+    echo -e "  ${YELLOW}⚠ No ArvanCloud API key found${NC}"
+    ((issues++))
+  else
+    local arvan_test
+    arvan_test=$(curl -s --max-time 5 -H "Authorization: $arvan_key" "https://napi.arvancloud.ir/vod/2.0/videos" 2>/dev/null)
+    if echo "$arvan_test" | grep -q '"data"'; then
+      echo -e "  ${GREEN}✓ ArvanCloud API reachable${NC}"
+    elif echo "$arvan_test" | grep -qi "unauthorized\|error"; then
+      echo -e "  ${RED}✗ ArvanCloud API key invalid${NC}"
+      ((issues++))
+    else
+      echo -e "  ${RED}✗ ArvanCloud API unreachable${NC}"
+      ((issues++))
     fi
-  elif [ "$mode" = "server" ]; then
-    echo -e "  ${GREEN}✓ Advertise IP: $adv_ip${NC}"
+  fi
+
+  # ── 11. VOD platform ──
+  echo -e "\n${YELLOW}[11/12] Checking VOD player...${NC}"
+  if command -v pm2 &>/dev/null && pm2 list 2>/dev/null | grep -q "vod-platform"; then
+    echo -e "  ${GREEN}✓ VOD platform (PM2) running${NC}"
+    local vod_resp
+    vod_resp=$(curl -s --max-time 5 "http://localhost:5050" 2>/dev/null)
+    if echo "$vod_resp" | grep -qi "html\|<!DOCTYPE"; then
+      echo -e "  ${GREEN}✓ VOD web UI responds on :5050${NC}"
+    else
+      echo -e "  ${YELLOW}⚠ VOD process running but :5050 not responding${NC}"
+      ((issues++))
+    fi
+  else
+    local vod_up
+    vod_up=$(docker ps --filter "name=vod" --format "{{.Names}}" 2>/dev/null)
+    if [ -n "$vod_up" ]; then
+      echo -e "  ${GREEN}✓ VOD platform (Docker) running${NC}"
+    else
+      echo -e "  ${RED}✗ VOD platform not found (PM2 or Docker)${NC}"
+      ((issues++))
+    fi
+  fi
+
+  # ── 12. Public URL reachability ──
+  echo -e "\n${YELLOW}[12/12] Checking Jitsi public URL...${NC}"
+  local jitsi_url
+  jitsi_url=$(grep -E "^PUBLIC_URL=" .env 2>/dev/null | cut -d= -f2-)
+  if [ -z "$jitsi_url" ]; then
+    jitsi_url="https://${pub_ip}:8443"
+  fi
+  local http_code
+  http_code=$(curl -sk --max-time 5 -o /dev/null -w "%{http_code}" "$jitsi_url" 2>/dev/null || echo "000")
+  if [ "$http_code" = "200" ] || [ "$http_code" = "302" ] || [ "$http_code" = "301" ]; then
+    echo -e "  ${GREEN}✓ $jitsi_url → HTTP $http_code${NC}"
+  else
+    echo -e "  ${RED}✗ $jitsi_url → HTTP $http_code${NC}"
+    ((issues++))
   fi
 
   # ── Summary ──
   echo ""
   echo -e "${CYAN}══════════════════════════════════════${NC}"
   if [ "$issues" -eq 0 ] && [ "$fixed" -eq 0 ]; then
-    echo -e "${GREEN}  ✅ All checks passed — system healthy${NC}"
+    echo -e "${GREEN}  ✅ All 12 checks passed — system healthy${NC}"
   else
     echo -e "  ${YELLOW}Issues found: $issues${NC}"
     [ "$fixed" -gt 0 ] && echo -e "  ${GREEN}Auto-fixed:  $fixed${NC}"
@@ -724,6 +737,61 @@ EOF
     echo -e "${GREEN}  Done.${NC}"
   fi
   echo -e "${CYAN}══════════════════════════════════════${NC}"
+
+  # ── Ask about Jibri recording test ──
+  echo ""
+  echo -e "  ${CYAN}Jibri Recording Test${NC}"
+  echo "  Would you like to run a full recording pipeline test?"
+  echo "  This will create a test room, start/stop recording via Jibri,"
+  echo "  wait for ArvanCloud upload, and clean up."
+  echo ""
+  read -rp "  Run recording test? [y/N]: " run_rec_test
+  if [[ "$run_rec_test" =~ ^[Yy] ]]; then
+    test_jibri_recording
+  fi
+
+  read -rp "Press Enter..."
+}
+
+# ── Jibri Recording Pipeline Test ──
+test_jibri_recording() {
+  local mode
+  mode=$(detect_mode)
+  if [ "$mode" = "none" ]; then
+    echo -e "${RED}Configure Jitsi first (option 1).${NC}"
+    read -rp "Press Enter..."
+    return
+  fi
+
+  local room duration
+  echo -e "\n${CYAN}── Jibri Recording Test ──${NC}"
+  echo ""
+  read -rp "Room name (random if empty): " room
+  read -rp "Recording duration in seconds [5]: " duration
+  duration="${duration:-5}"
+
+  echo -e "\n${YELLOW}Starting test...${NC}"
+
+  local script_path="${SCRIPT_DIR}/scripts/test-jibri-recording.py"
+  if [ ! -f "$script_path" ]; then
+    echo -e "${RED}Test script not found: $script_path${NC}"
+    return
+  fi
+
+  local cmd="python3 \"$script_path\""
+  [ -n "$room" ] && cmd="$cmd --room \"$room\""
+  cmd="$cmd --duration $duration"
+
+  cd "$SCRIPT_DIR" && eval "$cmd"
+  local rc=$?
+
+  echo ""
+  if [ "$rc" -eq 0 ]; then
+    echo -e "${GREEN}Recording pipeline test completed.${NC}"
+  else
+    echo -e "${YELLOW}Recording pipeline test completed with warnings/issues.${NC}"
+    echo -e "Check the output above for details."
+  fi
   read -rp "Press Enter..."
 }
 
@@ -902,6 +970,58 @@ do_release() {
   read -rp "Press Enter..."
 }
 
+# ── VOD Platform Management ──
+manage_vod() {
+  local mode
+  mode=$(detect_mode)
+  if [ "$mode" = "none" ]; then
+    echo -e "${RED}Configure Jitsi first (option 1).${NC}"
+    read -rp "Press Enter..."
+    return
+  fi
+
+  while true; do
+    local vod_pid
+    vod_pid=$(pm2 list 2>/dev/null | grep "vod-platform" | awk '{print $2}')
+    local vod_url="http://37.32.20.70:5050"
+    echo -e "\n${CYAN}── VOD Platform ──${NC}"
+    echo -e "  Status:  $( [ -n "$vod_pid" ] && echo -e "${GREEN}Running${NC}" || echo -e "${RED}Stopped${NC}" )"
+    [ -n "$vod_pid" ] && echo -e "  URL:     ${CYAN}${vod_url}${NC}"
+    echo -e "  Videos:  $(curl -s ${vod_url}/api/videos 2>/dev/null | python3 -c "import sys,json; print(len(json.load(sys.stdin)))" 2>/dev/null || echo '?')"
+    echo ""
+    echo "  1) Start VOD Platform"
+    echo "  2) Stop VOD Platform"
+    echo "  3) Restart VOD Platform"
+    echo "  4) Sync videos from ArvanCloud (run now)"
+    echo "  5) View sync logs"
+    echo "  6) Back"
+    echo ""
+    read -rp "Choice [1/2/3/4/5/6]: " vc
+    case "$vc" in
+      1)
+        cd "$SCRIPT_DIR/vod-platform-app" && pm2 start server.js --name vod-platform 2>/dev/null
+        echo -e "${GREEN}VOD started${NC}" ;;
+      2)
+        pm2 stop vod-platform 2>/dev/null
+        echo -e "${YELLOW}VOD stopped${NC}" ;;
+      3)
+        pm2 restart vod-platform 2>/dev/null
+        echo -e "${GREEN}VOD restarted${NC}" ;;
+      4)
+        echo -e "${YELLOW}Syncing from ArvanCloud...${NC}"
+        python3 "$SCRIPT_DIR/scripts/sync-vods-to-db.py" 2>&1
+        echo -e "${GREEN}Done${NC}" ;;
+      5)
+        tail -30 "$SCRIPT_DIR/logs/sync-vods.log" 2>/dev/null || echo -e "${RED}No logs yet${NC}"
+        echo "" ;;
+      6) return ;;
+      *) echo -e "${RED}Invalid${NC}"; sleep 1 ;;
+    esac
+    echo ""
+    read -rp "Press Enter..."
+  done
+}
+
 # ── Main Menu ──
 main_menu() {
   while true; do
@@ -923,9 +1043,10 @@ main_menu() {
     echo "  5) View All Running Containers"
     echo "  6) Video Quality Settings"
     echo "  7) Debug & Self-Heal"
-    echo "  8) Exit"
+    echo "  8) VOD Platform Management"
+    echo "  9) Exit"
     echo ""
-    read -rp "Choice [1/2/3/4/5/6/7/8]: " CHOICE
+    read -rp "Choice [1-9]: " CHOICE
     case "$CHOICE" in
     1) setup_jitsi ;;
     2)
@@ -976,7 +1097,8 @@ main_menu() {
       ;;
     6) setup_quality ;;
     7) debug_system ;;
-    8)
+    8) manage_vod ;;
+    9)
       echo "Goodbye."
       exit 0
       ;;
