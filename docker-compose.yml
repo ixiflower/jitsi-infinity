@@ -26,10 +26,8 @@ services:
             - ${CONFIG}/web:/config:Z
             - ${CONFIG}/web/crontabs:/var/spool/cron/crontabs:Z
             - ${CONFIG}/transcripts:/usr/share/jitsi-meet/transcripts:Z
-            - ${CONFIG}/web/lang/main.json:/usr/share/jitsi-meet/lang/main.json:Z
+            - ${CONFIG}/web/lang:/usr/share/jitsi-meet/lang:Z
             - ${CONFIG}/web/load-test:/usr/share/jitsi-meet/load-test:Z
-            - ${CONFIG}/web/libs/app.bundle.min.js:/usr/share/jitsi-meet/libs/app.bundle.min.js:Z
-            - ${CONFIG}/web/index.html:/usr/share/jitsi-meet/index.html:Z
         labels:
             service: "jitsi-web"
         environment:
