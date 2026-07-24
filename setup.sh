@@ -495,6 +495,28 @@ setup_monitoring() {
   read -rp "Press Enter..."
 }
 
+# ── KNOWN BUGS ────────────────────────────────────────────────────────
+# 2026-07-24: Jibri recording fails after cert/nginx changes
+# SYMPTOM: "Internal server error" when starting recording.
+#          Jibri logs show "APP is not defined" (HTTP) or
+#          "Cannot read properties of undefined (reading 'isJoined')" (HTTPS).
+# ROOT CAUSE 1: /config/custom-jibri.conf had "--kiosk" flag which makes
+#             Chrome startup 10x slower in Docker.
+# ROOT CAUSE 2: Selenium auto-downloads ChromeDriver from Google servers
+#             (blocked in Iran), causing 14-second timeout delay.
+#             Combined with Jibri's synchronous handleStartService
+#             (which doesn't send "pending" ACK until Chrome finishes
+#             starting), the 15-second Jicofo IQ timeout kills every
+#             recording attempt before Chrome loads.
+# FIX: 1. Remove "--kiosk" from custom-jibri.conf flags array.
+#      2. Add to .env.jibri: SE_OFFLINE=true, SE_MANAGER_DISABLED=true
+#         (prevents Selenium ChromeDriver download timeout).
+#      3. Add speed flags: --no-first-run, --disable-extensions, etc.
+#      4. Ensure ENABLE_PREJOIN_PAGE=0 so Jibri auto-joins rooms.
+#      5. PUBLIC_URL in .env.jibri must use https:// (HTTP breaks JS).
+# REF: Session 2026-07-24, Jitsi Infinity recording fix.
+# ────────────────────────────────────────────────────────────────────────
+
 # ── Debug / Self-Heal ──
 debug_system() {
   local mode
