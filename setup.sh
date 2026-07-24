@@ -497,9 +497,11 @@ setup_monitoring() {
 
 # ── KNOWN BUGS ────────────────────────────────────────────────────────
 # 2026-07-24: Jibri recording fails after cert/nginx changes
+#
 # SYMPTOM: "Internal server error" when starting recording.
 #          Jibri logs show "APP is not defined" (HTTP) or
 #          "Cannot read properties of undefined (reading 'isJoined')" (HTTPS).
+#
 # ROOT CAUSE 1: /config/custom-jibri.conf had "--kiosk" flag which makes
 #             Chrome startup 10x slower in Docker.
 # ROOT CAUSE 2: Selenium auto-downloads ChromeDriver from Google servers
@@ -508,12 +510,51 @@ setup_monitoring() {
 #             (which doesn't send "pending" ACK until Chrome finishes
 #             starting), the 15-second Jicofo IQ timeout kills every
 #             recording attempt before Chrome loads.
+#
+# DEBUGGING PROCESS (for future issues):
+#
+# 1. Isolate a single Jibri instance:
+#      docker rm -f $(docker ps --filter "name=jibri" --format "{{.Names}}" | grep -v jibri-1)
+#
+# 2. Watch Jicofo + Jibri logs simultaneously while user clicks record:
+#      docker logs jitsi-jicofo --tail 0 -f &
+#      docker logs jitsi-jibri-1 --tail 0 -f &
+#
+# 3. Key diagnostic: look for "Sending 'pending' response to start IQ"
+#    - If MISSING: Jibri IQ handler thread is blocked (Chrome/Selenium too slow)
+#    - If PRESENT but "FailedToJoinCall": Chrome can join page but JS fails
+#
+# 4. Check Chrome flags actually in use (NOT config.json — check RUNTIME):
+#      docker logs jitsi-jibri-1 | grep "chrome.flags.*Found value"
+#    The effective flags come from /config/custom-jibri.conf (LAST include wins)
+#    NOT from config.json or CHROMIUM_FLAGS env var.
+#
+# 5. Test raw Chrome startup speed inside the container:
+#      docker exec jitsi-jibri-1 bash -c 'export DISPLAY=:0 && \
+#        time google-chrome-stable --no-sandbox --headless \
+#        --dump-dom https://jitsi-web:443/ 2>/dev/null | wc -c'
+#    If >5 seconds: check --kiosk flag, X11 display health, /dev/shm size
+#
+# 6. Check Selenium offline mode (prevents ChromeDriver download timeout):
+#      docker exec jitsi-jibri-1 bash -c 'env | grep SE_'
+#    Should show: SE_OFFLINE=true, SE_MANAGER_DISABLED=true
+#
+# 7. Check Jibri IQ timeout pattern in Jicofo log:
+#      docker logs jitsi-jicofo | grep -E "sendJibriStartIq|timeout|Jibri start request timed"
+#    If exactly 15 seconds between start and timeout: IQ reply timeout (Smack default)
+#    If 90-180 seconds: pending-timeout (Jibri sent pending but Chrome join failed)
+#
+# 8. Verify Jibri URL params (prejoin bypass):
+#    Look for "CallUrlInfo" in Jibri logs — urlParams should be "not-empty"
+#    If "empty": prejoin page blocks Jibri → set ENABLE_PREJOIN_PAGE=0
+#
 # FIX: 1. Remove "--kiosk" from custom-jibri.conf flags array.
 #      2. Add to .env.jibri: SE_OFFLINE=true, SE_MANAGER_DISABLED=true
 #         (prevents Selenium ChromeDriver download timeout).
 #      3. Add speed flags: --no-first-run, --disable-extensions, etc.
 #      4. Ensure ENABLE_PREJOIN_PAGE=0 so Jibri auto-joins rooms.
 #      5. PUBLIC_URL in .env.jibri must use https:// (HTTP breaks JS).
+#
 # REF: Session 2026-07-24, Jitsi Infinity recording fix.
 # ────────────────────────────────────────────────────────────────────────
 
