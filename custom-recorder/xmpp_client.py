@@ -1,26 +1,23 @@
 #!/usr/bin/env python3
 """
-LightRec — Lightweight Jitsi Recording Agent
-Phase 1: XMPP Connection to Prosody
+LightRec — Phase 1: XMPP Client (JibriIq listener mode).
 
-Connects to Prosody, authenticates, joins a MUC room, and listens for
-Jingle session-initiate from Jicofo (the recording trigger).
+Connects to Prosody as recorder@hidden.meet.jitsi, joins the brewery MUC
+(so Jicofo can send us recording tasks), and listens for JibriIq.
 """
 
 import asyncio
-import json
 import logging
 import os
 import uuid
 from pathlib import Path
 
-import slixmpp
-from slixmpp.exceptions import IqError, IqTimeout
-
-logger = logging.getLogger("lightrec.xmpp")
+logging.basicConfig(level=logging.INFO,
+                    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+log = logging.getLogger("lightrec.xmpp")
 
 # ── Helpers ───────────────────────────────────────────────────────────
-def load_env(path=".env"):
+def load_env(path):
     env = {}
     p = Path(path)
     if p.exists():
@@ -32,190 +29,264 @@ def load_env(path=".env"):
     return env
 
 
-# ── XMPP Client ───────────────────────────────────────────────────────
-class LightRecXMPP(slixmpp.ClientXMPP):
-    """Connects to Prosody, authenticates, joins a MUC, listens for IQs."""
+# ── Low-level XMPP client (no lib needed) ─────────────────────────────
+class XMPPClient:
+    """
+    Minimal async XMPP client using asyncio + socket.
+    Connects to Prosody, auth as recorder, joins brewery MUC,
+    listens for JibriIq.
+    """
 
-    def __init__(self, jid, password, room, nick="lightrec"):
-        super().__init__(jid, password)
-        self.room = room
-        self.nick = nick
-        self.room_jid = f"{room}@muc.meet.jitsi"
-        self.session_id = str(uuid.uuid4())
+    def __init__(self, jid, password, room_callback=None):
+        self.jid = jid
+        self.username = jid.split("@")[0]
+        self.domain = jid.split("@")[1]
+        self.password = password
+        self.room_callback = room_callback  # called when recording triggered
+        self.reader = None
+        self.writer = None
+        self.session_id = str(uuid.uuid4())[:8]
+        self.brevery_jid = "jibribrewery@internal-muc.meet.jitsi"
+        self.running = True
 
-        # Plugins
-        self.register_plugin("xep_0030")  # Service Discovery
-        self.register_plugin("xep_0045")  # MUC
-        self.register_plugin("xep_0085")  # Chat State Notifications
-        self.register_plugin("xep_0199")  # XMPP Ping
+    async def connect(self, host="xmpp.meet.jitsi", port=5222):
+        """Connect to Prosody with TLS."""
+        log.info(f"Connecting to {host}:{port} as {self.jid}")
 
-        # Event handlers
-        self.add_event_handler("session_start", self.on_session_start)
-        self.add_event_handler("message", self.on_message)
-        self.add_event_handler("groupchat_presence", self.on_muc_presence)
-        self.add_event_handler("groupchat_message", self.on_muc_message)
-        self.add_event_handler("disconnected", self.on_disconnect)
+        # TCP connect
+        self.reader, self.writer = await asyncio.wait_for(
+            asyncio.open_connection(host, port), timeout=10)
 
-        # IQ handlers
-        self.register_handler(
-            slixmpp.IQHandler(
-                iq=self._handle_jingle_iq,
-                match=slixmpp.MatchXPath(
-                    "{urn:xmpp:jingle:1}jingle"
-                ),
-            )
+        # Stream to hidden domain
+        await self._send(
+            "<stream:stream to='hidden.meet.jitsi' "
+            "xmlns='jabber:client' "
+            "xmlns:stream='http://etherx.jabber.org/streams' version='1.0'>"
         )
+        features = await self._recv_until(b"</stream:features>", timeout=5)
+        log.debug(f"Features: {len(features)}b")
 
-        self.connected = asyncio.Event()
-        self.joined_muc = asyncio.Event()
+        # STARTTLS
+        await self._send("<starttls xmlns='urn:ietf:params:xml:ns:xmpp-tls'/>")
+        resp = await self._recv(4096, timeout=5)
+        if b"<proceed" not in resp:
+            log.error("TLS not available")
+            return False
 
-    async def on_session_start(self, event):
-        """Connected to XMPP — join the MUC room."""
-        logger.info(f"Connected as {self.boundjid}")
-        self.send_presence()
-        await self.get_roster()
-
-        logger.info(f"Joining MUC: {self.room_jid}/{self.nick}")
-        self.plugin["xep_0045"].join_muc(
-            self.room_jid,
-            self.nick,
-            wait=True
-        )
-        self.connected.set()
-
-    def on_message(self, msg):
-        """Direct message handler."""
-        if msg["type"] in ("chat", "normal"):
-            logger.debug(f"DM from {msg['from']}: {msg['body']}")
-
-    def on_muc_presence(self, pres):
-        """MUC presence updates — log join/leave."""
-        nick = pres["muc_nick"]
-        if pres["type"] == "unavailable":
-            logger.info(f"Participant left: {nick}")
-        else:
-            logger.info(f"Participant joined: {nick}")
-            self.joined_muc.set()
-
-    def on_muc_message(self, msg):
-        """MUC room messages (for info, not media)."""
-        body = msg.get("body", "")
-        if body:
-            logger.debug(f"[MUC] {msg['muc_nick']}: {body}")
-
-    def on_disconnect(self, event):
-        """Connection lost — log and exit."""
-        logger.warning("Disconnected from XMPP")
-        self.connected.clear()
-
-    async def _handle_jingle_iq(self, iq):
-        """Handle Jingle IQ from Jicofo (session-initiate)."""
-        if iq["type"] == "set":
-            jingle = iq["jingle"]
-            action = jingle["action"]
-            sid = jingle["sid"]
-            logger.info(f"Jingle {action} sid={sid} from {iq['from']}")
-
-            if action == "session-initiate":
-                # We received a recording offer — this is the trigger!
-                await self._handle_session_initiate(iq, jingle)
-            elif action == "session-terminate":
-                logger.info("Session terminated — recording done")
-            elif action == "transport-info":
-                logger.info("ICE candidate received")
-            return self.make_iq_result(iq)
-
-        return self.make_iq_error(iq)
-
-    async def _handle_session_initiate(self, iq, jingle):
-        """
-        Handle Jingle session-initiate from Jicofo.
-        This is where we'd set up the WebRTC connection.
-        """
-        logger.info("=" * 50)
-        logger.info("RECORDING TRIGGERED! Session init received.")
-        logger.info(f"  From: {iq['from']}")
-        logger.info(f"  Room: {self.room}")
-        logger.info(f"  SID:  {jingle['sid']}")
-        logger.info("=" * 50)
-
-        # TODO Phase 2: Set up aiortc WebRTC session
-        # For now, just acknowledge
-
-    async def start_recording_session(self):
-        """
-        Manually trigger recording by sending a start request to Jicofo
-        (simulates what the Jitsi Meet client does when user clicks Record).
-        """
-        logger.info("Requesting recording start from Jicofo...")
-        
-        # Send JibriIq to Jicofo via the room's focus
-        focus_jid = f"{self.room_jid}/focus"
-        
-        iq = self.Iq()
-        iq["type"] = "set"
-        iq["to"] = focus_jid
-        iq["from"] = self.boundjid
-        
-        jibri = slixmpp.Element("jibri", {
-            "xmlns": "http://jitsi.org/protocol/jibri",
-            "action": "start",
-            "recording_mode": "file",
-            "room": self.room_jid,
-            "session_id": self.session_id,
-        })
-        iq.append(jibri)
-        
-        try:
-            result = await iq.send(timeout=10)
-            logger.info(f"Recording start response: {result}")
-            return True
-        except IqError as e:
-            logger.error(f"Recording start error: {e}")
-        except IqTimeout:
-            logger.error("Recording start timeout")
+        # Upgrade to TLS
+        import ssl
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        transport = self.writer.transport
+        sock = transport.get_extra_info("socket")
+        # We can't easily upgrade asyncio transport to TLS
+        # This requires start_tls which is available in Python 3.11+
+        log.error("TLS upgrade not supported in current asyncio setup")
         return False
 
 
+class XMPPClientTLS:
+    """
+    XMPP client using raw socket + manual recv/send (no asyncio).
+    Runs in executor thread.
+    """
+
+    def __init__(self, jid, password, room_callback=None):
+        self.jid = jid
+        self.username = jid.split("@")[0]
+        self.domain = jid.split("@")[1]
+        self.password = password
+        self.room_callback = room_callback
+        self.sock = None
+        self.session_id = str(uuid.uuid4())[:8]
+        self.running = True
+
+    def connect(self, host="xmpp.meet.jitsi", port=5222):
+        """Synchronous connect to Prosody with TLS."""
+        import socket, ssl, time, base64
+
+        log.info(f"Connecting to {host}:{port} as {self.jid}")
+
+        self.sock = socket.create_connection((host, port), timeout=10)
+        self.sock.settimeout(10)
+
+        def recv_until(marker, timeout=10):
+            self.sock.settimeout(timeout)
+            data = b""
+            while marker not in data:
+                chunk = self.sock.recv(4096)
+                if not chunk:
+                    break
+                data += chunk
+            return data
+
+        # 1. Stream to hidden domain
+        self.sock.send(
+            b"<stream:stream to='hidden.meet.jitsi' "
+            b"xmlns='jabber:client' "
+            b"xmlns:stream='http://etherx.jabber.org/streams' version='1.0'>"
+        )
+        recv_until(b"</stream:features>", 5)
+        log.info("1. Stream features received")
+
+        # 2. STARTTLS
+        self.sock.send(b"<starttls xmlns='urn:ietf:params:xml:ns:xmpp-tls'/>")
+        resp = self.sock.recv(4096)
+        if b"<proceed" not in resp:
+            log.error("TLS not available")
+            return False
+        log.info("2. TLS proceeding")
+
+        # 3. Wrap TLS
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        self.sock = ctx.wrap_socket(self.sock, server_hostname=host)
+        self.sock.settimeout(10)
+        log.info("3. TLS established")
+
+        # 4. Auth stream
+        self.sock.send(
+            b"<stream:stream to='hidden.meet.jitsi' "
+            b"xmlns='jabber:client' "
+            b"xmlns:stream='http://etherx.jabber.org/streams' version='1.0'>"
+        )
+        recv_until(b"</stream:features>", 5)
+
+        # 5. SASL PLAIN
+        auth_str = f"\x00{self.username}\x00{self.password}"
+        auth_b64 = base64.b64encode(auth_str.encode()).decode()
+        self.sock.send(
+            f"<auth xmlns='urn:ietf:params:xml:ns:xmpp-sasl' "
+            f"mechanism='PLAIN'>{auth_b64}</auth>".encode()
+        )
+        resp = recv_until(b"<success", timeout=10)
+        if b"<success" not in resp:
+            log.error(f"Auth failed: {resp[:200]}")
+            return False
+        log.info("4. AUTH OK")
+
+        # 6. Post-auth stream
+        self.sock.send(
+            b"<stream:stream to='hidden.meet.jitsi' "
+            b"xmlns='jabber:client' "
+            b"xmlns:stream='http://etherx.jabber.org/streams' version='1.0'>"
+        )
+        recv_until(b"</stream:features>", 5)
+
+        # 7. Bind resource
+        rid = str(uuid.uuid4())[:8]
+        self.sock.send(
+            f"<iq type='set' id='bind-1'><bind "
+            f"xmlns='urn:ietf:params:xml:ns:xmpp-bind'>"
+            f"<resource>lightrec-{rid}</resource></bind></iq>".encode()
+        )
+        time.sleep(0.5)
+        self.sock.recv(8192)
+
+        # 8. Session
+        self.sock.send(
+            b"<iq type='set' id='sess-1'>"
+            b"<session xmlns='urn:ietf:params:xml:ns:xmpp-session'/></iq>"
+        )
+        time.sleep(0.5)
+        self.sock.recv(8192)
+
+        # 9. Join brewery MUC (so Jicofo can send us tasks)
+        self.sock.send(
+            f"<presence to='{self.brevery_jid}/lightrec'>"
+            b"<x xmlns='http://jabber.org/protocol/muc'/></presence>".encode()
+        )
+        time.sleep(2)
+        resp = b""
+        self.sock.settimeout(3)
+        try:
+            while True:
+                resp += self.sock.recv(8192)
+        except:
+            pass
+        log.info(f"5. Brewery MUC response: {len(resp)}b")
+        log.info(f"   Preview: {resp[:200]}")
+
+        log.info("Phase 1 complete! Waiting for recording tasks...")
+        return True
+
+    def listen(self):
+        """Listen for incoming IQs (JibriIq from Jicofo)."""
+        import xml.etree.ElementTree as ET
+        self.sock.settimeout(None)
+        buf = b""
+
+        while self.running:
+            try:
+                chunk = self.sock.recv(65536)
+                if not chunk:
+                    break
+                buf += chunk
+
+                # Process complete stanzas
+                while b"</iq>" in buf or b"</message>" in buf or b"</presence>" in buf:
+                    # Simple parsing - look for IQ with jibri namespace
+                    if b"jibri" in buf and b"</iq>" in buf:
+                        iq_end = buf.find(b"</iq>") + 6
+                        stanza = buf[:iq_end].decode("utf-8", errors="replace")
+                        buf = buf[iq_end:]
+
+                        if "jibri" in stanza and "action" in stanza:
+                            log.info(f"JibriIq received!")
+                            log.info(f"Stanza: {stanza[:200]}")
+                            if self.room_callback:
+                                self.room_callback(stanza)
+                    else:
+                        # Consume one stanza
+                        for tag in [b"</iq>", b"</message>", b"</presence>"]:
+                            if tag in buf:
+                                idx = buf.find(tag) + len(tag)
+                                buf = buf[idx:]
+                                break
+                        else:
+                            break
+
+            except Exception as e:
+                log.error(f"Error in listen loop: {e}")
+                break
+
+    def disconnect(self):
+        self.running = False
+        if self.sock:
+            try:
+                self.sock.send(b"</stream:stream>")
+                self.sock.close()
+            except:
+                pass
+
+
 # ── Main ──────────────────────────────────────────────────────────────
-async def main():
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    )
-    logging.getLogger("slixmpp").setLevel(logging.WARNING)
+def main():
+    env = load_env("/app/.env.jibri") or \
+          load_env("/home/ubuntu/jitsi-infinity/.env.jibri") or \
+          load_env(".env.jibri") or {}
 
-    # Load credentials from .env.jibri
-    env_path = Path(__file__).parent.parent / ".env.jibri"
-    env = load_env(env_path)
-
-    jid = env.get("XMPP_RECORDER_USER", "recorder@hidden.meet.jitsi")
     password = env.get("JIBRI_RECORDER_PASSWORD", "")
-    room = os.environ.get("LIGHTREC_ROOM", "lightrec-test")
-
     if not password:
-        logger.error("JIBRI_RECORDER_PASSWORD not found in .env.jibri")
+        log.error("JIBRI_RECORDER_PASSWORD not found")
         return
 
-    xmpp = LightRecXMPP(jid, password, room)
+    def on_recording(stanza):
+        log.info(f"Recording triggered! Stanza: {stanza[:300]}")
 
-    # Connect to Prosody
-    xmpp.connect(("xmpp.meet.jitsi", 5222))
-    
-    # Wait for connection and MUC join
-    await xmpp.connected.wait()
-    await xmpp.joined_muc.wait()
-    
-    logger.info(f"Joined room {room}. Waiting for recording trigger...")
-    
-    # Keep running until interrupted
-    try:
-        while True:
-            await asyncio.sleep(1)
-    except KeyboardInterrupt:
-        logger.info("Shutting down...")
-        xmpp.disconnect()
+    xmpp = XMPPClientTLS("recorder@hidden.meet.jitsi", password, on_recording)
+
+    if xmpp.connect():
+        log.info("Connected to Jitsi infrastructure. Listening...")
+        xmpp.listen()
+    else:
+        log.error("Failed to connect")
+
+    xmpp.disconnect()
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    from pathlib import Path
+    main()
