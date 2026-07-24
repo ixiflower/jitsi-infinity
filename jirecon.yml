@@ -1,0 +1,30 @@
+# Jirecon recording service (alternative to Jibri)
+# Uses the jitsi/jibri image for Java runtime
+# Jirecon jar built from https://github.com/jitsi/jirecon
+#
+# Usage:
+#   JIRECON_ROOM=room@muc.meet.jitsi docker compose -f jirecon.yml up -d
+#   docker compose -f jirecon.yml logs -f
+
+services:
+  jirecon:
+    image: jitsi/jibri:unstable
+    container_name: jitsi-jirecon
+    entrypoint: ["java"]
+    command:
+      - "-cp"
+      - "/opt/jirecon/jirecon.jar:/opt/jirecon/lib/*"
+      - "org.jitsi.jirecon.Main"
+      - "--conf=/opt/jirecon/jirecon.properties"
+      - "--time=${JIRECON_TIME:--1}"
+      - "${JIRECON_ROOM:?Set JIRECON_ROOM to the room JID (e.g. room@muc.meet.jitsi)}"
+    restart: "no"
+    volumes:
+      - ./config/jirecon/jirecon.jar:/opt/jirecon/jirecon.jar:Z
+      - ./lib/jirecon/:/opt/jirecon/lib/:Z
+      - ./jirecon.properties:/opt/jirecon/jirecon.properties:Z
+      - ./recordings:/recordings:Z
+    environment:
+      - JIRECON_NICKNAME=jirecon
+    networks:
+      meet.jitsi:
