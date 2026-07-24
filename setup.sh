@@ -1211,6 +1211,57 @@ manage_vod() {
   done
 }
 
+# ── Switch Recording Backend ──
+switch_recording_backend() {
+  local mode
+  mode=$(detect_mode)
+  if [ "$mode" = "none" ]; then
+    echo -e "${RED}Configure Jitsi first (option 1).${NC}"
+    read -rp "Press Enter..."
+    return
+  fi
+
+  echo -e "\n${CYAN}── Recording Backend ──${NC}\n"
+
+  local current="jibri"
+  if docker ps --format "{{.Names}}" 2>/dev/null | grep -q "jitsi-jirecon"; then
+    current="jirecon"
+  fi
+
+  echo -e "  Current backend: ${YELLOW}${current}${NC}"
+  echo ""
+  echo -e "  ${GREEN}1)${NC} Use Jibri   (Chrome + Selenium — composite video)"
+  echo -e "  ${GREEN}2)${NC} Use Jirecon (Java — direct RTP streams)"
+  echo ""
+  echo -e "  ${YELLOW}Jibri:${NC}   Recordings trigger on-demand from the Jitsi UI."
+  echo -e "           Composited video file. Chrome + Selenium stack."
+  echo -e "  ${YELLOW}Jirecon:${NC} Records ALL audio/video streams individually."
+  echo -e "           Lightweight Java app. Run with:"
+  echo -e "           ${CYAN}JIRECON_ROOM=room@muc.meet.jitsi docker compose -f jirecon.yml up -d${NC}"
+  echo ""
+
+  if [ "$current" = "jibri" ]; then
+    read -rp "Switch to Jirecon? [y/N]: " ans
+    if [[ "$ans" =~ ^[Yy] ]]; then
+      echo -e "\n${YELLOW}Stopping Jibri instances...${NC}"
+      docker rm -f $(docker ps --filter "name=jibri-" --format "{{.Names}}" 2>/dev/null) 2>/dev/null
+      echo -e "\n${YELLOW}To start Jirecon, set the room:${NC}"
+      echo "  JIRECON_ROOM=room@muc.meet.jitsi docker compose -f jirecon.yml up -d"
+      echo -e "${GREEN}Jirecon ready. Point it to a room to record.${NC}"
+    fi
+  else
+    read -rp "Switch to Jibri? [y/N]: " ans
+    if [[ "$ans" =~ ^[Yy] ]]; then
+      echo -e "\n${YELLOW}Stopping Jirecon...${NC}"
+      docker rm -f jitsi-jirecon 2>/dev/null
+      echo -e "${YELLOW}Starting Jibri...${NC}"
+      cd "${SCRIPT_DIR}" && docker compose -f docker-compose.yml -f jibri-pool.yml up -d 2>&1
+      echo -e "${GREEN}Jibri restored.${NC}"
+    fi
+  fi
+  read -rp "Press Enter..."
+}
+
 # ── Main Menu ──
 main_menu() {
   while true; do
@@ -1234,9 +1285,10 @@ main_menu() {
     echo "  7) Video Quality Settings"
     echo "  8) Debug & Self-Heal"
     echo "  9) VOD Platform Management"
-    echo "  10) Exit"
+    echo "  10) Switch Record Backend (Jibri ↔ Jirecon)"
+    echo "  11) Exit"
     echo ""
-    read -rp "Choice [1-10]: " CHOICE
+    read -rp "Choice [1-11]: " CHOICE
     case "$CHOICE" in
     1) setup_jitsi ;;
     2)
@@ -1289,7 +1341,8 @@ main_menu() {
     7) setup_quality ;;
     8) debug_system ;;
     9) manage_vod ;;
-    10)
+    10) switch_recording_backend ;;
+    11)
       echo "Goodbye."
       exit 0
       ;;
