@@ -1,0 +1,13 @@
+FROM jitsi/jibri:unstable
+
+# Python deps are baked into the image's Python3
+# just copy the lightrec script and vendored deps
+COPY lightrec.py /opt/lightrec/
+COPY requirements.txt /opt/lightrec/
+
+# Install from PyPI wheels cached locally (no network needed)
+RUN pip3 install --no-cache-dir aiortc 2>/dev/null || \
+    pip3 install --no-cache-dir --no-deps aioice aiortc pyee pylibsrtp ifaddr 2>/dev/null || \
+    echo "Will use vendored deps"
+
+ENTRYPOINT ["python3", "-u", "/opt/lightrec/lightrec.py"]

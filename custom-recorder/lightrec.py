@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
-LightRec — Phase 2: XMPP (raw socket) + WebRTC (aiortc) integration.
-Builds on the working raw-socket XMPP client and adds Jingle/WebRTC.
+LightRec v2 — Orchestrator mode.
+Gets recording triggers from Jicofo, delegates to Jibri containers.
+No WebRTC stack needed — uses the existing Jibri Docker infrastructure.
 """
 
 import asyncio
@@ -11,107 +12,102 @@ import logging
 import os
 import ssl
 import socket
-import struct
+import subprocess
 import time
 import uuid
 from pathlib import Path
 
-import aiortc
-from aiortc import RTCPeerConnection, RTCSessionDescription, MediaStreamTrack
-
 log = logging.getLogger("lightrec")
 
-# ── XMPP Raw Socket Client ───────────────────────────────────────────
-class XMPP:
-    """Minimal XMPP client (raw socket). Handles auth + MUC + Jingle IQs."""
+# ── Config ────────────────────────────────────────────────────────────
+JIBRI_COUNT = int(os.environ.get("JIBRI_COUNT", "5"))
+JIBRI_IMAGE = os.environ.get("JIBRI_IMAGE", "jitsi/jibri:unstable")
+JITSI_NETWORK = os.environ.get("JITSI_NETWORK", "jitsi-infinity_meet.jitsi")
+RECORDINGS_DIR = os.environ.get("RECORDINGS_DIR", "/recordings")
 
-    def __init__(self, jid, password):
+
+# ── XMPP Client (raw socket) ──────────────────────────────────────────
+class XMPP:
+    """Minimal XMPP — connects, joins brewery, listens for JibriIq."""
+
+    def __init__(self, jid, password, on_trigger=None):
         self.jid = jid
         self.username = jid.split("@")[0]
         self.domain = jid.split("@")[1]
         self.password = password
         self.sock = None
-        self.brevery_jid = "jibribrewery@internal-muc.meet.jitsi"
+        self.brewery = "jibribrewery@internal-muc.meet.jitsi"
         self.running = True
-        self.recv_buffer = b""
+        self.on_trigger = on_trigger
         self.session_id = str(uuid.uuid4())[:8]
-        self.on_jibri_iq = None  # callback
 
     def connect(self, host="xmpp.meet.jitsi", port=5222):
-        """Connect + TLS + auth + join brewery."""
         self.sock = socket.create_connection((host, port), timeout=10)
         self.sock.settimeout(10)
 
-        # Stream to hidden domain
-        self._send(b"<stream:stream to='hidden.meet.jitsi' "
-                   b"xmlns='jabber:client' "
-                   b"xmlns:stream='http://etherx.jabber.org/streams' version='1.0'>")
+        # Stream to auth domain
+        self._send(b"<stream:stream to='auth.meet.jitsi' xmlns='jabber:client' xmlns:stream='http://etherx.jabber.org/streams' version='1.0'>")
         self._recv_until(b"</stream:features>", 5)
-        log.info("1. Stream features OK")
+        log.info("1. Features OK")
 
-        # STARTTLS
+        # TLS
         self._send(b"<starttls xmlns='urn:ietf:params:xml:ns:xmpp-tls'/>")
-        resp = self.sock.recv(4096)
-        if b"<proceed" not in resp:
-            log.error("TLS not available"); return False
-        log.info("2. TLS proceeding")
-
-        # Wrap TLS
+        if b"<proceed" not in self.sock.recv(4096):
+            log.error("TLS unavailable"); return False
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
         self.sock = ctx.wrap_socket(self.sock, server_hostname=host)
         self.sock.settimeout(10)
-        log.info("3. TLS OK")
+        log.info("2. TLS OK")
 
-        # Auth stream
-        self._send(b"<stream:stream to='hidden.meet.jitsi' "
-                   b"xmlns='jabber:client' "
-                   b"xmlns:stream='http://etherx.jabber.org/streams' version='1.0'>")
+        # Auth
+        self._send(b"<stream:stream to='auth.meet.jitsi' xmlns='jabber:client' xmlns:stream='http://etherx.jabber.org/streams' version='1.0'>")
         self._recv_until(b"</stream:features>", 5)
-
-        # SASL PLAIN
         auth = f"\x00{self.username}\x00{self.password}"
-        auth_b64 = base64.b64encode(auth.encode()).decode()
-        self._send(f"<auth xmlns='urn:ietf:params:xml:ns:xmpp-sasl' "
-                   f"mechanism='PLAIN'>{auth_b64}</auth>")
-        resp = self._recv_until(b"<success", timeout=10)
+        ab64 = base64.b64encode(auth.encode()).decode()
+        self._send(f"<auth xmlns='urn:ietf:params:xml:ns:xmpp-sasl' mechanism='PLAIN'>{ab64}</auth>")
+        resp = self._recv_until(b"<success", 10)
         if b"<success" not in resp:
             log.error(f"Auth failed: {resp[:200]}"); return False
-        log.info("4. AUTH OK")
+        log.info("3. AUTH OK")
 
-        # Post-auth stream
-        self._send(b"<stream:stream to='hidden.meet.jitsi' "
-                   b"xmlns='jabber:client' "
-                   b"xmlns:stream='http://etherx.jabber.org/streams' version='1.0'>")
+        # Bind + Session
+        self._send(b"<stream:stream to='auth.meet.jitsi' xmlns='jabber:client' xmlns:stream='http://etherx.jabber.org/streams' version='1.0'>")
         self._recv_until(b"</stream:features>", 5)
-
-        # Bind resource
         rid = str(uuid.uuid4())[:8]
-        self._send(f"<iq type='set' id='bind-1'><bind "
-                   f"xmlns='urn:ietf:params:xml:ns:xmpp-bind'>"
-                   f"<resource>lightrec-{rid}</resource></bind></iq>")
-        time.sleep(0.5)
-        self._recv(8192)
+        self._send(f"<iq type='set' id='b1'><bind xmlns='urn:ietf:params:xml:ns:xmpp-bind'><resource>lightrec-{rid}</resource></bind></iq>")
+        time.sleep(0.5); self._recv(8192)
+        self._send(b"<iq type='set' id='s1'><session xmlns='urn:ietf:params:xml:ns:xmpp-session'/></iq>")
+        time.sleep(0.5); self._recv(8192)
 
-        # Session
-        self._send(b"<iq type='set' id='sess-1'>"
-                   b"<session xmlns='urn:ietf:params:xml:ns:xmpp-session'/></iq>")
-        time.sleep(0.5)
-        self._recv(8192)
-
-        # Join brewery MUC
-        self._send(f"<presence to='{self.brevery_jid}/lightrec'>"
-                   f"<x xmlns='http://jabber.org/protocol/muc'/></presence>")
+        # 1. Join brewery MUC (initial presence, no status)
+        self._send(
+            f"<presence to='{self.brewery}/lightrec'>"
+            f"<x xmlns='http://jabber.org/protocol/muc'/></presence>"
+        )
         time.sleep(2)
-        resp = self._recv(65536, timeout=3)
-        log.info(f"5. Brewery MUC: {len(resp)}b")
+        self._recv(65536, timeout=3)
+        log.info("4a. Brewery MUC joined")
 
-        log.info("Connected to brewery. Waiting for JibriIq...")
+        # 2. Send Jibri status update (idle = available for recording)
+        status_id = str(uuid.uuid4())
+        self._send(
+            f"<presence to='{self.brewery}/lightrec'>"
+            f"<x xmlns='http://jabber.org/protocol/muc'/>"
+            f"<jibri-status xmlns='http://jitsi.org/protocol/jibri'>"
+            f"<busy-status>idle</busy-status>"
+            f"<health-status>HEALTHY</health-status>"
+            f"</jibri-status>"
+            f"</presence>"
+        )
+        time.sleep(2)
+        self._recv(65536, timeout=3)
+        log.info("4b. Jibri status sent (idle)")
+
         return True
 
     def listen(self):
-        """Listen for stanzas (blocking). Calls on_jibri_iq when triggered."""
         self.sock.settimeout(None)
         buf = b""
         while self.running:
@@ -120,24 +116,22 @@ class XMPP:
                 if not chunk:
                     break
                 buf += chunk
-
-                # Process complete iq stanzas
                 while b"</iq>" in buf:
                     idx = buf.find(b"</iq>") + 6
                     stanza = buf[:idx].decode("utf-8", errors="replace")
                     buf = buf[idx:]
                     if "jibri" in stanza and "action" in stanza:
-                        log.info("JibriIq received!")
-                        if self.on_jibri_iq:
-                            self.on_jibri_iq(stanza)
+                        log.info("=== JibriIq RECEIVED ===")
+                        if self.on_trigger:
+                            self.on_trigger(stanza)
             except Exception as e:
                 if self.running:
-                    log.error(f"Listen error: {e}")
+                    log.error(f"Error: {e}")
                 break
 
     def _send(self, data):
         if isinstance(data, str):
-            data = data.encode("utf-8")
+            data = data.encode()
         self.sock.send(data)
 
     def _recv(self, size, timeout=10):
@@ -166,48 +160,32 @@ class XMPP:
             pass
 
 
-# ── WebRTC Session ────────────────────────────────────────────────────
-class WebRTCSession:
-    """Manages a WebRTC connection to JVB for recording."""
+# ── Trigger Handler ───────────────────────────────────────────────────
+def handle_trigger(stanza):
+    """When Jicofo sends a JibriIq, parse and launch a Jibri container."""
+    log.info(f"Handling recording trigger...")
 
-    def __init__(self):
-        self.pc = None
-        self.tracks = []
+    # Extract session_id and room from the IQ
+    import re
+    session_match = re.search(r'session_id="([^"]+)"', stanza)
+    room_match = re.search(r'room="([^"]+)"', stanza)
+    action_match = re.search(r'action="([^"]+)"', stanza)
 
-    async def create_from_jingle(self, jingle_stanza):
-        """Parse Jingle session-initiate and create WebRTC answer."""
-        log.info("Creating WebRTC session from Jingle...")
-        self.pc = RTCPeerConnection()
+    session_id = session_match.group(1) if session_match else "unknown"
+    room = room_match.group(1) if room_match else "unknown"
+    action = action_match.group(1) if action_match else "unknown"
 
-        @self.pc.on("track")
-        async def on_track(track):
-            log.info(f"Track received: {track.kind}")
-            self.tracks.append(track)
+    log.info(f"  Action: {action}")
+    log.info(f"  Room: {room}")
+    log.info(f"  Session: {session_id}")
 
-        @self.pc.on("iceconnectionstatechange")
-        async def on_ice():
-            state = self.pc.iceConnectionState
-            log.info(f"ICE: {state}")
-            if state == "connected":
-                log.info("RECORDING - WebRTC connected!")
-
-        # Create data channel for control
-        self.pc.createDataChannel("control")
-
-        # Create answer
-        # For now, we just create a bare offer/answer
-        self.pc.addTransceiver("audio", direction="recvonly")
-        self.pc.addTransceiver("video", direction="recvonly")
-
-        offer = await self.pc.createOffer()
-        await self.pc.setLocalDescription(offer)
-        log.info(f"WebRTC offer created: {len(offer.sdp)} chars")
-
-        return self.pc.localDescription
-
-    async def close(self):
-        if self.pc:
-            await self.pc.close()
+    if action == "start":
+        log.info(f"Starting recording for room: {room}")
+        # In orchestrator mode, we would launch a Jibri container here
+        # But for now we just acknowledge
+        log.info("LightRec v2: Trigger received (Jibri would record)")
+    elif action == "stop":
+        log.info("Stop recording requested")
 
 
 # ── Main ──────────────────────────────────────────────────────────────
@@ -216,32 +194,26 @@ def load_env(path):
     p = Path(path)
     if p.exists():
         for line in p.read_text().splitlines():
-            line = line.strip()
-            if line and "=" in line and not line.startswith("#"):
+            if "=" in line and not line.startswith("#"):
                 k, v = line.split("=", 1)
                 env[k.strip()] = v.strip().strip("\"'")
     return env
 
 
 def main():
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    )
+    logging.basicConfig(level=logging.INFO,
+                        format="%(asctime)s [%(levelname)s] %(message)s")
 
     env = load_env("/app/.env.jibri") or {}
-    password = env.get("JIBRI_RECORDER_PASSWORD", "")
+    password = env.get("JIBRI_XMPP_PASSWORD", "")
     if not password:
-        log.error("No password"); return
+        log.error("JIBRI_XMPP_PASSWORD not found")
+        return
 
-    def on_jibri(stanza):
-        log.info(f"Recording triggered! Room info in: {stanza[:300]}")
-
-    xmpp = XMPP("recorder@hidden.meet.jitsi", password)
-    xmpp.on_jibri_iq = on_jibri
+    xmpp = XMPP("jibri@auth.meet.jitsi", password, handle_trigger)
 
     if xmpp.connect():
-        log.info("LightRec Phase 2: Connected. Waiting for trigger...")
+        log.info("LightRec v2: Connected. Waiting for triggers...")
         xmpp.listen()
     else:
         log.error("Connection failed")

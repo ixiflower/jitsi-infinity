@@ -1,0 +1,2 @@
+VideoCodecContext = object
+VideoStream = object
