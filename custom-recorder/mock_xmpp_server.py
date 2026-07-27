@@ -33,24 +33,24 @@ class MockXmppServer:
         self.port = port
         self._stop = threading.Event()
 
-    def _recv_stanza(self, conn, timeout=8):
+    def _recv_stanza(self, conn, timeout=8, buf=b""):
         """Read one XML stanza from a plain socket, waiting up to timeout secs."""
-        conn.settimeout(timeout)
-        buf = b""
+        if isinstance(buf, str):
+            buf = buf.encode()
+        conn.settimeout(0.5)
         deadline = time.time() + timeout
         while time.time() < deadline:
             try:
                 chunk = conn.recv(4096)
+                if not chunk:
+                    log.info("Connection closed by peer")
+                    return None, buf
+                buf += chunk
             except socket.timeout:
-                log.warning("recv timed out")
-                return None, buf
+                pass
             except OSError as e:
                 log.error(f"recv error: {e}")
                 return None, buf
-            if not chunk:
-                log.info("Connection closed by peer")
-                return None, buf
-            buf += chunk
             # Try to extract a complete stanza
             # Look for stream:stream header
             if b"<stream:stream" in buf and b">" in buf:
@@ -70,13 +70,11 @@ class MockXmppServer:
                 si = buf.find(tag)
                 # Find matching close or self-close
                 if b"/>" in buf[si:]:
-                    # Self-closing
-                    if b"<proceed" in tag or b"<success" in tag or b"<failure" in tag:
-                        # These are not XML, just tags
-                        ei = buf.find(b">", si)
-                        stanza = buf[:ei + 1]
-                        rest = buf[ei + 1:]
-                        return stanza, rest
+                    # Self-closing element
+                    ei = buf.find(b">", si)
+                    stanza = buf[:ei + 1]
+                    rest = buf[ei + 1:]
+                    return stanza, rest
                 # Standard XML: find </tag>
                 tag_name = tag[1:].split(b" ")[0].split(b">")[0]
                 close_tag = b"</" + tag_name + b">"
@@ -101,7 +99,7 @@ class MockXmppServer:
 
         try:
             # ═══ STEP 1: Read client stream header ═══
-            stanza, buf = self._recv_stanza(conn, timeout=8)
+            stanza, buf = self._recv_stanza(conn, timeout=8, buf=buf)
             if not stanza or b"stream:stream" not in stanza:
                 log.error(f"Expected stream header, got: {stanza[:80] if stanza else None}")
                 return
@@ -124,7 +122,7 @@ class MockXmppServer:
             time.sleep(0.1)
 
             # ═══ STEP 3: Read STARTTLS ═══
-            stanza, buf = self._recv_stanza(conn, timeout=5)
+            stanza, buf = self._recv_stanza(conn, timeout=5, buf=buf)
             if not stanza or b"starttls" not in stanza:
                 log.error(f"Expected STARTTLS, got: {stanza[:80] if stanza else None}")
                 return
@@ -144,7 +142,7 @@ class MockXmppServer:
             log.info("✓ TLS established")
 
             # ═══ STEP 5: Read post-TLS stream header ═══
-            stanza, buf = self._recv_stanza(conn, timeout=8)
+            stanza, buf = self._recv_stanza(conn, timeout=8, buf=buf)
             if not stanza or b"stream:stream" not in stanza:
                 log.error(f"Expected post-TLS stream, got: {stanza[:80] if stanza else None}")
                 return
@@ -168,7 +166,7 @@ class MockXmppServer:
             time.sleep(0.1)
 
             # ═══ STEP 7: Read SASL auth ═══
-            stanza, buf = self._recv_stanza(conn, timeout=5)
+            stanza, buf = self._recv_stanza(conn, timeout=5, buf=buf)
             if not stanza or b"auth" not in stanza:
                 log.error(f"Expected SASL auth, got: {stanza[:80] if stanza else None}")
                 return
@@ -203,7 +201,7 @@ class MockXmppServer:
             time.sleep(0.1)
 
             # ═══ STEP 11: Read IQ bind ═══
-            stanza, buf = self._recv_stanza(conn, timeout=5)
+            stanza, buf = self._recv_stanza(conn, timeout=5, buf=buf)
             if not stanza or b"bind" not in stanza:
                 log.error(f"Expected IQ bind, got: {stanza[:80] if stanza else None}")
                 return
@@ -230,17 +228,18 @@ class MockXmppServer:
             )
             log.info(f"✓ Bound: {full_jid}")
 
-            # ═══ STEP 12: Read IQ session ═══
-            stanza, buf = self._recv_stanza(conn, timeout=5)
-            if stanza and b"session" in stanza:
+            # ═══ STEP 12: Read IQ session (optional in modern XMPP) ═══
+            stanza, buf = self._recv_stanza(conn, timeout=3, buf=buf)
+            is_session = stanza and b"session" in stanza
+            if is_session:
                 sid_id = stanza.split(b"id='")[1].split(b"'")[0].decode() if b"id='" in stanza else "sess-1"
                 send(f"<iq type='result' id='{sid_id}'/>", "session-ok")
                 log.info("✓ Session started")
-            else:
-                log.warning(f"Expected session, got: {stanza[:60] if stanza else None}")
+                # Read next stanza (brewery presence)
+                stanza, buf = self._recv_stanza(conn, timeout=5, buf=buf)
+                is_session = False  # This is now the brewery presence
 
-            # ═══ STEP 13: Read brewery presence ═══
-            stanza, buf = self._recv_stanza(conn, timeout=5)
+            # ═══ STEP 13: Brewery presence received (directly or after session) ═══
             if stanza and b"presence" in stanza and b"muc" in stanza:
                 log.info("✓ Received brewery MUC presence")
             else:
@@ -249,7 +248,10 @@ class MockXmppServer:
             # Send MUC self-presence
             send(
                 f"<presence from='{BREWERY}/{resource}' to='{full_jid}'>"
-                f"<x xmlns='http://jabber.org/protocol/muc'/></presence>",
+                f"<x xmlns='http://jabber.org/protocol/muc'>"
+                f"<user xmlns='http://jabber.org/protocol/muc#user'>"
+                f"<item affiliation='member' role='participant'/>"
+                f"</user></x></presence>",
                 "muc-self"
             )
 
@@ -263,30 +265,32 @@ class MockXmppServer:
             # ════════════════════════════════════════════════════════════
 
             test_room = "testroom@muc.meet.jitsi"
-            test_sid = uuid.uuid4().hex
+            test_sid = uuid.uuid4().hex[:12]
 
             # --- JibriIq START ---
             log.info(">>> JibriIq START")
             send(
                 f"<iq type='set' from='focus@{DOMAIN}/focus' to='{full_jid}' "
                 f"id='jibri-s-1'>"
-                f"<jibri xmlns='http://jitsi.org/protocol/jibri' "
-                f"action='start' room='{test_room}' session_id='{test_sid}'/>"
-                f"</iq>",
+                f"<jibri xmlns='http://jitsi.org/protocol/jibri'>"
+                f"<action>start</action>"
+                f"<room>{test_room}</room>"
+                f"<sessionid>{test_sid}</sessionid>"
+                f"</jibri></iq>",
                 "jibri-start"
             )
 
             time.sleep(0.5)
             # Read responses: ACK + room presence
             for i in range(5):
-                resp, buf = self._recv_stanza(conn, timeout=1)
+                resp, buf = self._recv_stanza(conn, timeout=1, buf=buf)
                 if resp:
                     log.info(f"<<< Response {i}: {resp[:200]}")
 
             # --- Colibri IQ ---
             log.info(">>> Colibri IQ")
             send(
-                f"<iq type='set' from='jvb@{DOMAIN}/jvb' to='{full_jid}' "
+                f"<iq type='set' from='focus@{DOMAIN}/focus' to='{full_jid}' "
                 f"id='col-1'>"
                 f"<jingle xmlns='urn:xmpp:jingle:1' action='session-initiate' "
                 f"sid='{test_sid}'>"
@@ -303,7 +307,7 @@ class MockXmppServer:
 
             time.sleep(0.5)
             for i in range(3):
-                resp, buf = self._recv_stanza(conn, timeout=1)
+                resp, buf = self._recv_stanza(conn, timeout=1, buf=buf)
                 if resp:
                     log.info(f"<<< Response {i}: {resp[:200]}")
 
@@ -312,15 +316,17 @@ class MockXmppServer:
             send(
                 f"<iq type='set' from='focus@{DOMAIN}/focus' to='{full_jid}' "
                 f"id='jibri-s-2'>"
-                f"<jibri xmlns='http://jitsi.org/protocol/jibri' "
-                f"action='stop' room='{test_room}' session_id='{test_sid}'/>"
-                f"</iq>",
+                f"<jibri xmlns='http://jitsi.org/protocol/jibri'>"
+                f"<action>stop</action>"
+                f"<room>{test_room}</room>"
+                f"<sessionid>{test_sid}</sessionid>"
+                f"</jibri></iq>",
                 "jibri-stop"
             )
 
             time.sleep(0.5)
             for i in range(5):
-                resp, buf = self._recv_stanza(conn, timeout=1)
+                resp, buf = self._recv_stanza(conn, timeout=1, buf=buf)
                 if resp:
                     log.info(f"<<< Response {i}: {resp[:200]}")
 

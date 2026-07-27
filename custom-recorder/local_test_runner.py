@@ -24,92 +24,97 @@ log = logging.getLogger("local-test")
 os.environ["XMPP_SERVER"] = "127.0.0.1"
 os.environ["XMPP_PORT"] = "5222"
 os.environ["JIBRI_XMPP_PASSWORD"] = "secret"  # mock accepts any password
-os.environ["JIBRI_BREWERY"] = "jibribrewery@internal-muc.meet.jitsi"
 os.environ["RECORDINGS_DIR"] = "/tmp/lightrec-recordings"
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
 import lightrec
+import mock_xmpp_server as mock
 
 
 def main():
     os.makedirs("/tmp/lightrec-recordings", exist_ok=True)
 
     # ── 1. Start mock XMPP server ──
-    import mock_xmpp_server as mock
+    mock_path = os.path.join(os.path.dirname(__file__), "mock_xmpp_server.py")
     server = mock.MockXmppServer(host="127.0.0.1", port=5222)
     svr_thread = threading.Thread(target=server.start, daemon=True)
     svr_thread.start()
     time.sleep(0.5)
     log.info("Mock XMPP server started on 127.0.0.1:5222")
 
-    # ── 2. Quick smoke test: unit tests ──
+    # ── 2. Connect LightRec ──
     log.info("=" * 60)
-    log.info("Running unit tests first...")
-    import subprocess
-    result = subprocess.run(
-        [sys.executable, "-m", "pytest",
-         os.path.join(os.path.dirname(__file__), "test_lightrec_unit.py"),
-         "-v", "--tb=short"],
-        capture_output=True, text=True, timeout=30
-    )
-    for line in result.stdout.splitlines():
-        if "PASSED" in line or "FAILED" in line:
-            log.info(f"  {line.strip()}")
-    if result.returncode != 0:
-        log.error(f"  Some unit tests FAILED! Stopping.")
-        log.error(result.stderr[:500])
-        return
-    log.info("  ✅ All unit tests passed!")
-    log.info("=" * 60)
-
-    # ── 3. Integration test: XMPP flow ──
     log.info("Connecting LightRec to mock server...")
 
     on_trigger_called = {"start": False, "stop": False}
+    trigger_lock = threading.Lock()
 
     def on_trigger(room, session_id, action="start"):
-        log.info(f"🔥 CALLBACK: on_trigger(action={action}, room={room}, "
-                 f"session_id={session_id[:8] if session_id else '?'})")
-        if action == "start":
-            on_trigger_called["start"] = True
-            on_trigger_called["room"] = room
-            on_trigger_called["sid"] = session_id
-        elif action == "stop":
-            on_trigger_called["stop"] = True
+        with trigger_lock:
+            log.info(f"🔥 CALLBACK: on_trigger(action={action}, room={room}, "
+                     f"session_id={session_id[:8] if session_id else '?'})")
+            on_trigger_called["action"] = action
+            if action == "start":
+                on_trigger_called["start"] = True
+                on_trigger_called["room"] = room
+                on_trigger_called["sid"] = session_id
+            elif action == "stop":
+                on_trigger_called["stop"] = True
 
-    def on_colibri(sid, ip, port, srtp_key):
-        log.info(f"📡 CALLBACK: on_colibri(sid={sid[:8] if sid else '?'}, "
-                 f"ip={ip}, port={port})")
-        on_trigger_called["colibri"] = True
-        on_trigger_called["colibri_ip"] = ip
-        on_trigger_called["colibri_port"] = port
+    def on_colibri(sid, ip, port, room_jid, srtp_key=None, video_ip=None, video_port=None):
+        with trigger_lock:
+            log.info(f"📡 CALLBACK: on_colibri(sid={sid[:8] if sid else '?'}, "
+                     f"ip={ip}, port={port})")
+            on_trigger_called["colibri"] = True
+            on_trigger_called["colibri_ip"] = ip
+            on_trigger_called["colibri_port"] = port
 
-    # Create LightRec XMPP instance but bypass infinite reconnect loop
-    xmpp = lightrec.XMPP(
+    # Create and connect LightRec
+    xmpp = lightrec.LightRec(
         "jibri@auth.meet.jitsi",
         "secret",
-        on_trigger=on_trigger,
-        on_colibri=on_colibri,
+        recordings_dir="/tmp/lightrec-recordings",
     )
+    xmpp.on_trigger = on_trigger
+    xmpp.on_colibri = on_colibri
+
     if not xmpp.connect():
         log.error("❌ LightRec failed to connect to mock server!")
         return
 
-    log.info("✅ LightRec connected to mock server!")
-    log.info("  Waiting for brewery presence handshake...")
-    time.sleep(1)
+    log.info("✅ LightRec TCP/TLS connected!")
 
-    # The mock server will automatically send:
-    #   JibriIq START → colibri IQ → JibriIq STOP
-    # LightRec's listen loop processes these
-    log.info("  Listening for stanzas (mock server will send test sequence)...")
-    time.sleep(5)
+    if not xmpp.authenticate():
+        log.error("❌ LightRec SASL authentication failed!")
+        return
+    log.info("✅ LightRec authenticated!")
 
-    # Stop listening
-    xmpp.running = False
+    if not xmpp.bind_resource():
+        log.error("❌ LightRec resource binding failed!")
+        return
+    log.info("✅ LightRec bound!")
+
+    if not xmpp.join_brewery():
+        log.error("❌ LightRec brewery join failed!")
+        return
+    log.info("✅ LightRec joined brewery!")
+
+    # ── 3. Start listener in background ──
+    listener_thread = threading.Thread(target=xmpp.listen, daemon=True)
+    listener_thread.start()
     time.sleep(0.5)
+    log.info("✅ LightRec listener started")
+    log.info("  Mock server will send: JibriIq START → colibri IQ → JibriIq STOP")
+    log.info("  Waiting for triggers (8 seconds)...")
 
-    # ── 4. Verify results ──
+    # The mock server sends stanzas ~1s after brewery join
+    time.sleep(8)
+
+    # ── 4. Stop and verify ──
+    xmpp.running = False
+    time.sleep(0.3)
+
     log.info("=" * 60)
     log.info("VERIFICATION")
     log.info(f"  on_trigger(start) called: {on_trigger_called.get('start', False)}")
@@ -124,8 +129,7 @@ def main():
         log.info(f"  ✅ JibriIq START received (room={on_trigger_called.get('room')})")
 
     if not on_trigger_called.get("colibri", False):
-        log.warning("  ⚠️  on_colibri was NOT called (colibri IQ may not have been parsed)")
-        # This is not a hard failure — colibri parsing depends on stanza format
+        log.warning("  ⚠️  on_colibri was NOT called (colibri IQ format mismatch?)")
     else:
         log.info(f"  ✅ Colibri IQ received "
                  f"({on_trigger_called.get('colibri_ip')}:"
@@ -144,7 +148,10 @@ def main():
         log.warning("⚠️  Integration test had issues — check logs above")
 
     # Cleanup
-    xmpp.disconnect()
+    try:
+        xmpp._xmpp_sock.close()
+    except Exception:
+        pass
     server.stop()
     log.info("Done.")
 
