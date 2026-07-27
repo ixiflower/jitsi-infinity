@@ -1,0 +1,12 @@
+# Local override: disable jibri-pool and jibri-autoscaler
+# We'll use LightRec instead
+services:
+  jibri-autoscaler:
+    profiles:
+      - disabled
+  jibri-1:
+    profiles:
+      - disabled
+  jibri-2:
+    profiles:
+      - disabled

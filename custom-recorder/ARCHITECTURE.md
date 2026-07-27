@@ -1,84 +1,111 @@
-# LightRec — Lightweight Jitsi Recording Agent
+# LightRec v3 — Lightweight Jitsi Recording Orchestrator
 
-A minimal, high-quality recorder for Jitsi Meet that replaces the heavy
-Chrome+Selenium stack (Jibri) with a direct Python+WebRTC pipeline.
+A Python-based Jibri orchestration layer that replaces the static Jibri pool
+with an intelligent dispatcher. LightRec connects to the brewery MUC, receives
+recording triggers from Jicofo, and launches on-demand Jibri containers.
 
-## Architecture
+## Architecture v3 (current — Orchestrator Mode)
 
 ```
-┌──────────────┐    XMPP (slixmpp)    ┌──────────┐
-│   LightRec   │◄────────────────────►│  Prosody  │
-│  (Python)    │    Join MUC room      │ (XMPP)   │
-│              │                       └────┬─────┘
-│              │                            │
-│              │    Jingle (ICE/DTLS/SRTP)  │
-│              │◄───────────────────────────┤
-│              │                            │
-│              │    RTP streams             │
-│              │◄───────────────────────────┤
-│              │                            │
-│              │    Recording + Upload      │
-│   recorder/  │──────► MP4 file ──► ArvanCloud
-│   uploader/  │──────► VOD DB
+┌──────────────┐    XMPP (raw socket)    ┌──────────┐
+│   LightRec   │◄───────────────────────►│  Prosody  │
+│  (Python)    │   Join brewery MUC      │ (XMPP)   │
+│              │   (jibri@auth.meet.jitsi)└────┬─────┘
+│              │                               │
+│              │   JibriIq (recording trigger)  │
+│              │◄──────────────────────────────┤
+│              │                               │
+│              │   Launch Jibri containers     │
+│              │─────────► docker run ...      │
+│              │         (on-demand)           │
 └──────────────┘
 ```
 
-## Components
+### How it works
 
-### 1. XMPP Layer (`xmpp_client.py`)
-- Connects to Prosody via C2S (port 5222)
-- SASL PLAIN auth as `recorder@hidden.meet.jitsi`
-- Joins MUC room (the conference)
-- Registers Jingle IQ handler
-- Receives session-init from Jicofo
+1. **LightRec starts** → connects to Prosody C2S as `jibri@auth.meet.jitsi`
+2. **Joins brewery** → `jibribrewery@internal-muc.meet.jitsi`
+3. **Sends Jibri presence** → includes `<jibri-status>` and `<health-status>` as **sibling** elements (not nested — critical fix!)
+4. **Jicofo detects LightRec** → lists it as an available Jibri instance
+5. **User clicks Record** → Jicofo sends JibriIq to LightRec
+6. **LightRec ACKs** → sends IQ result back immediately (avoids 15s timeout)
+7. **LightRec delegates** → launches a Jibri Docker container for the room
+8. **Jibri records** → Chrome + Selenium process inside the container
 
-### 2. WebRTC Layer (`webrtc_session.py`)
-- Uses aiortc for RTP/RTCP handling
-- ICE connectivity with JVB via Trickle ICE
-- DTLS-SRTP key exchange  
-- Receives audio (Opus) and video (VP8/VP9) streams
-- Feeds raw packets to recorder
+### Key Fix: Presence Format
 
-### 3. Recording Layer (`recorder.py`)
-- Receives RTP packets from WebRTC session
-- Demuxes audio/video into separate streams
-- Uses ffmpeg (pipe) to mux into MP4
-- Generates metadata (timestamps, participant info)
+Jicofo's `HealthStatusPacketExt` (Java Smack extension) expects `health-status`
+as a **direct child of `<presence>`**, NOT nested inside `<jibri-status>`.
 
-### 4. Upload Layer (`uploader.py`)
-- After recording completes:
-  1. Finalize MP4 file
-  2. Upload to ArvanCloud via VOD API
-  3. Insert record into VOD player SQLite DB
-  4. Clean up local temp files
+**✅ CORRECT (what LightRec v3 sends):**
+```xml
+<presence to='jibribrewery@internal-muc.meet.jitsi/lightrec-xxx'>
+  <x xmlns='http://jabber.org/protocol/muc'/>
+  <jibri-status xmlns='http://jitsi.org/protocol/jibri'>
+    <busy-status>idle</busy-status>
+  </jibri-status>
+  <health-status xmlns='http://jitsi.org/protocol/health'>HEALTHY</health-status>
+</presence>
+```
 
-### 5. Dockerfile + entrypoint
-- Minimal Alpine-based container
-- Python 3.12 + required deps
-- Runs as daemon, reads config from env vars
+**❌ WRONG (v2 had this — `available = false`):**
+```xml
+<jibri-status xmlns='http://jitsi.org/protocol/jibri'>
+  <busy-status>idle</busy-status>
+  <health-status>HEALTHY</health-status>  <!-- NESTED — WRONG -->
+</jibri-status>
+```
 
-## Protocol Flow
+## Files
 
-1. LightRec starts → reads config (room JID, credentials, etc.)
-2. Connects to Prosody C2S on 5222
-3. Authenticates as recorder@hidden.meet.jitsi
-4. Joins the MUC room as a participant
-5. Jicofo sends Jingle `session-initiate` via the MUC
-6. LightRec responds with `session-accept` (ICE candidates, DTLS fingerprint)
-7. ICE connectivity with JVB establishes
-8. DTLS handshake completes → SRTP keys derived
-9. RTP streams flow in → captured → piped to ffmpeg
-10. On stop signal → finalize MP4 → upload → cleanup
+| File | Purpose |
+|------|---------|
+| `lightrec.py` | Main orchestrator — XMPP client + Docker orchestration |
+| `Dockerfile` | Minimal image based on `jitsi/jibri:unstable` |
+| `docker-compose.lightrec.yml` | Docker Compose service definition |
+| `deploy-lightrec.sh` | Deployment script for the server |
+| `test_lightrec_unit.py` | 26 unit tests (no network needed) |
+| `test_presence_format.py` | Presence format verification |
+
+## Testing locally
+
+```bash
+# Unit tests (no network/Docker needed):
+cd custom-recorder
+python3 test_lightrec_unit.py
+
+# Presence format verification:
+python3 test_presence_format.py
+
+# Full XMPP test (requires SOCKS5 proxy to reach server):
+python3 test_xmpp_full.py
+```
+
+## Deployment
+
+```bash
+# On the server (37.32.20.70):
+cd ~/jitsi-infinity
+bash custom-recorder/deploy-lightrec.sh
+
+# Or step by step:
+docker compose -f docker-compose.yml -f custom-recorder/docker-compose.lightrec.yml build lightrec
+docker compose -f docker-compose.yml -f custom-recorder/docker-compose.lightrec.yml up -d lightrec
+docker logs jitsi-lightrec -f
+```
 
 ## Status
 
-Phase 1 (XMPP): Planning
-Phase 2 (WebRTC): Planning  
-Phase 3 (Recording): Planning
-Phase 4 (Integration): Planning
-
-## References
-
-- Jitsi protocol docs: https://jitsi.org/docs/
-- aiortc: https://aiortc.readthedocs.io/
-- slixmpp: https://slixmpp.readthedocs.io/
+| Component | Status |
+|-----------|--------|
+| XMPP connection (raw socket) | ✅ Working |
+| SASL PLAIN auth | ✅ Working |
+| Brewery MUC join | ✅ Working |
+| Presence format (sibling health-status) | ✅ Fixed in v3 |
+| IQ response (ACK to Jicofo) | ✅ Implemented |
+| Jibri container launch | ✅ Implemented |
+| Reconnection logic | ✅ Implemented |
+| Stop recording | ⚠️ Basic (docker stop + rm) |
+| WebRTC direct capture | ❌ Blocked (av version mismatch) — orchestrator mode instead |
+| Recording to file (direct) | ❌ Not needed — Jibri handles this |
+| ArvanCloud upload | ❌ Separate service handles this |

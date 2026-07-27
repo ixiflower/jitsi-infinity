@@ -1,29 +1,20 @@
-FROM jitsi/jibri:unstable
+# LightRec v3 — Multi-stage build with static FFmpeg
+FROM mwader/static-ffmpeg:7.1 AS ffmpeg
 
-USER root
+FROM python:3.11-slim
 
-# Create av stub module  
-RUN mkdir -p /opt/lightrec/av/audio /opt/lightrec/av/video /opt/lightrec/av/frame /opt/lightrec/av/packet
+COPY --from=ffmpeg /ffmpeg /usr/local/bin/ffmpeg
+COPY --from=ffmpeg /ffprobe /usr/local/bin/ffprobe
+RUN chmod +x /usr/local/bin/ffmpeg /usr/local/bin/ffprobe
 
-COPY av_stub/__init__.py /opt/lightrec/av/__init__.py
+RUN adduser --disabled-password --gecos "" lightrec && \
+    mkdir -p /recordings && \
+    chown lightrec:lightrec /recordings
 
-RUN for sub in frame audio; do \
-  echo "from av_stub import AudioFrame, VideoFrame, Packet; Frame = AudioFrame" > /opt/lightrec/av/$sub/__init__.py; \
-done && \
-  echo "VideoCodecContext = type('VideoCodecContext', (), {}); VideoStream = type('VideoStream', (), {})" > /opt/lightrec/av/video/__init__.py && \
-  echo "from av_stub import VideoFrame; VideoCodecContext = type('VideoCodecContext', (), {})" > /opt/lightrec/av/video/codeccontext.py && \
-  echo "VideoStream = type('VideoStream', (), {})" > /opt/lightrec/av/video/stream.py
+COPY --chown=lightrec:lightrec lightrec.py /opt/lightrec.py
+RUN chmod +x /opt/lightrec.py
 
-# Copy vendored aiortc + aioice from local
-COPY vendor/aiortc /opt/lightrec/aiortc
-COPY vendor/aioice /opt/lightrec/aioice
-COPY vendor/pyee /opt/lightrec/pyee
-COPY vendor/pylibsrtp /opt/lightrec/pylibsrtp
-COPY vendor/ifaddr /opt/lightrec/ifaddr
+USER lightrec
+WORKDIR /opt
 
-# Copy lightrec
-COPY lightrec.py /opt/lightrec/
-
-ENV PYTHONPATH=/opt/lightrec
-
-ENTRYPOINT ["python3", "-u", "/opt/lightrec/lightrec.py"]
+CMD ["python3", "-u", "/opt/lightrec.py"]

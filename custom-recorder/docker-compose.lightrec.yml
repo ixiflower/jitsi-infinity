@@ -1,0 +1,32 @@
+# LightRec v3 — Docker Compose integration for Jitsi Infinity (local test)
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f custom-recorder/docker-compose.lightrec.yml up -d lightrec
+#
+# LightRec connects as jibri@auth.meet.jitsi, receives JibriIq triggers
+# from Jicofo, and logs them (local test mode). On the server, it launches
+# on-demand Jibri containers via docker.sock.
+
+services:
+  lightrec:
+    container_name: jitsi-lightrec
+    build:
+      context: ./custom-recorder
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      # XMPP credentials (password inherited from main .env via docker compose)
+      - JIBRI_XMPP_USER=jibri
+      - JIBRI_XMPP_DOMAIN=auth.meet.jitsi
+      - XMPP_SERVER=xmpp.meet.jitsi
+      - XMPP_PORT=5222
+      - JIBRI_BREWERY_MUC=jibribrewery@internal-muc.meet.jitsi
+      - TZ=UTC
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./custom-recorder/arvancloud-upload.sh:/opt/arvancloud-upload.sh:ro
+      - ./recordings:/recordings
+    networks:
+      meet.jitsi:
