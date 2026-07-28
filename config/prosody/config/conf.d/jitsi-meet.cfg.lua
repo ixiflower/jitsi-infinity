@@ -21,7 +21,7 @@ plugin_paths = { "/prosody-plugins-custom", "/prosody-plugins/", "/prosody-plugi
 muc_mapper_domain_base = "meet.jitsi";
 muc_mapper_domain_prefix = "muc";
 
-recorder_prefixes = { "recorder@hidden.meet.jitsi" };
+recorder_prefixes = { "recorder@hidden.meet.jitsi", "jibri@auth.meet.jitsi" };
 
 transcriber_prefixes = { "transcriber@hidden.meet.jitsi" };
 
@@ -37,24 +37,32 @@ consider_bosh_secure = true;
 consider_websocket_secure = true;
 
 
+smacks_max_unacked_stanzas = 5;
+smacks_hibernation_time = 60;
+smacks_max_old_sessions = 1;
+
 
 
 
 VirtualHost "meet.jitsi"
 
-    authentication = "jitsi-anonymous"
+  
+    authentication = "internal_hashed"
+    disable_sasl_mechanisms={ "DIGEST-MD5", "OAUTHBEARER" }
+  
 
     ssl = {
-        key = "/config/certs/meet.jitsi.key";
-        certificate = "/config/certs/meet.jitsi.crt";
+        key = "/run/prosody/config/certs/meet.jitsi.key";
+        certificate = "/run/prosody/config/certs/meet.jitsi.crt";
     }
     modules_enabled = {
         "bosh";
         "features_identity";
         
-        "conference_duration";
+        "websocket";
+        "smacks"; -- XEP-0198: Stream Management
         
-        "muc_lobby_rooms";
+        "conference_duration";
         
         
         "muc_breakout_rooms";
@@ -67,11 +75,6 @@ VirtualHost "meet.jitsi"
     }
 
     main_muc = "muc.meet.jitsi"
-    
-    lobby_muc = "lobby.meet.jitsi"
-    
-    muc_lobby_whitelist = { "hidden.meet.jitsi" }
-    
     
 
     
@@ -88,8 +91,8 @@ VirtualHost "meet.jitsi"
 
 VirtualHost "auth.meet.jitsi"
     ssl = {
-        key = "/config/certs/auth.meet.jitsi.key";
-        certificate = "/config/certs/auth.meet.jitsi.crt";
+        key = "/run/prosody/config/certs/auth.meet.jitsi.key";
+        certificate = "/run/prosody/config/certs/auth.meet.jitsi.crt";
     }
     modules_enabled = {
         "limits_exception";
@@ -131,7 +134,6 @@ Component "muc.meet.jitsi" "muc"
         
         "muc_password_whitelist";
         
-        "muc_resource_validate";
         }
 
     anonymous_strict = false;
@@ -145,6 +147,7 @@ Component "muc.meet.jitsi" "muc"
     muc_password_whitelist = {
         "focus@auth.meet.jitsi";
         "recorder@hidden.meet.jitsi";
+        "jibri@auth.meet.jitsi";
     }
     muc_tombstones = false
     muc_room_allow_persistent = false
@@ -166,19 +169,6 @@ Component "avmoderation.meet.jitsi" "av_moderation_component"
 
 
 
-Component "lobby.meet.jitsi" "muc"
-    storage = "memory"
-    restrict_room_creation = true
-    muc_tombstones = false
-    muc_room_allow_persistent = false
-    muc_room_cache_size = 10000
-    muc_room_locking = false
-    muc_room_default_public_jids = true
-    modules_enabled = {
-        "muc_hide_all";
-    }
-
-    
 
 
 Component "breakout.meet.jitsi" "muc"

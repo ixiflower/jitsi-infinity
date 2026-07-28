@@ -21,3 +21,12 @@ scripts/*.bak
 logs/
 uploads/
 package-lock.json
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Backup files
+*.bak
+*.orig
