@@ -975,6 +975,11 @@ setup_quality() {
 }
 
 # ── Jibri Server Location (Local / Remote) ──
+# Handles both local (same-stack) and remote (separate VM) Jibri deployment.
+# Remote mode: collects SSH creds → sets up Docker + config via sshpass → registers
+#   XMPP accounts in local Prosody → installs SSH key for future passwordless mgmt →
+#   starts Jibri on remote → verifies brewery MUC join.
+# Also pins recordings retention (finalize-script=empty so Jibri never deletes files).
 setup_jibri_location() {
   local mode
   mode=$(detect_mode)
@@ -991,46 +996,105 @@ setup_jibri_location() {
   echo ""
   read -rp "Choice [1/2]: " jloc
 
+  # ── Ensure recording retention is pinned ──
+  # Jibri only deletes recordings if a finalize-script is explicitly configured.
+  # By keeping JIBRI_FINALIZE_RECORDING_SCRIPT_PATH unset/empty, Jibri leaves
+  # files in /recordings/ after stopping.  The ArvanCloud upload watcher reads
+  # from the same directory and never removes the source.
+  if grep -q "^JIBRI_RECORDING_DIR=" .env.jibri 2>/dev/null; then
+    :  # already set
+  else
+    echo "JIBRI_RECORDING_DIR=/recordings" >> .env.jibri
+  fi
+  # Explicitly remove any finalize path so recordings are NEVER auto-deleted
+  sed -i '/^JIBRI_FINALIZE_RECORDING_SCRIPT_PATH=/d' .env.jibri 2>/dev/null || true
+
   if [ "$jloc" = "2" ]; then
+    # ── Collect credentials ──
     echo ""
-    read -rp "Remote server IP: " REMOTE_IP
+    read -rp "Remote server IP / hostname: " REMOTE_IP
     read -rp "SSH username [root]: " SSH_USER
     SSH_USER="${SSH_USER:-root}"
-    read -rsp "SSH password: " SSH_PASS
+    read -rsp "SSH password (will be used once, then replaced by key): " SSH_PASS
     echo ""
 
+    # ── Detect this (main) server's reachable IP ──
     local MAIN_IP
     MAIN_IP=$(curl -s --max-time 3 ifconfig.me 2>/dev/null || ip route get 1 | awk '{print $7; exit}' 2>/dev/null || echo "")
-
     if [ -z "$MAIN_IP" ]; then
       echo -e "${RED}Could not detect public IP of this server. Aborting.${NC}"
-      read -rp "Press Enter..."
-      return
+      read -rp "Press Enter..."; return
     fi
 
+    # ── Jibri / Recorder XMPP passwords (reuse from .env.jibri) ──
+    local JIBRI_PASS RECORDER_PASS
+    JIBRI_PASS=$(grep -E "^JIBRI_XMPP_PASSWORD=" .env.jibri 2>/dev/null | cut -d= -f2-)
+    RECORDER_PASS=$(grep -E "^JIBRI_RECORDER_PASSWORD=" .env.jibri 2>/dev/null | cut -d= -f2-)
+    if [ -z "$JIBRI_PASS" ] || [ -z "$RECORDER_PASS" ]; then
+      echo -e "${RED}JIBRI_XMPP_PASSWORD / JIBRI_RECORDER_PASSWORD not found in .env.jibri.${NC}"
+      echo -e "${YELLOW}Run option 1 (Setup Jitsi) first to generate credentials.${NC}"
+      read -rp "Press Enter..."; return
+    fi
+
+    # ── sshpass — install if needed ──
     if ! command -v sshpass &>/dev/null; then
       echo -e "${YELLOW}Installing sshpass...${NC}"
-      sudo apt install -y sshpass 2>/dev/null || true
+      (sudo apt install -y sshpass 2>/dev/null || sudo pacman -S --noconfirm sshpass 2>/dev/null) || true
     fi
 
-    echo -e "\n${YELLOW}[1/4] Installing Docker on remote server...${NC}"
-    sshpass -p "$SSH_PASS" ssh -o StrictHostKeyChecking=no "${SSH_USER}@${REMOTE_IP}" \
-      "if ! command -v docker &>/dev/null; then curl -fsSL https://get.docker.com | sh; sudo usermod -aG docker \$SSH_USER; fi" 2>&1
+    # ── STEP 1: Install Docker + SSH key ──
+    echo -e "\n${YELLOW}[1/5] Installing Docker & SSH key on remote server...${NC}"
 
-    echo -e "\n${YELLOW}[2/4] Creating directories on remote server...${NC}"
+    # Generate dedicated SSH keypair for passwordless mgmt (id_rsa_jibri)
+    local KEY_PATH="$HOME/.ssh/id_rsa_jibri"
+    if [ ! -f "$KEY_PATH" ]; then
+      ssh-keygen -t ed25519 -f "$KEY_PATH" -N "" -C "jibri-remote-mgmt" 2>/dev/null
+    fi
+
+    # Push the public key to remote authorized_keys
     sshpass -p "$SSH_PASS" ssh -o StrictHostKeyChecking=no "${SSH_USER}@${REMOTE_IP}" \
-      "mkdir -p /opt/jitsi-jibri/recordings" 2>&1
+      "mkdir -p ~/.ssh && chmod 700 ~/.ssh" 2>/dev/null
+    sshpass -p "$SSH_PASS" ssh -o StrictHostKeyChecking=no "${SSH_USER}@${REMOTE_IP}" \
+      "grep -qxF '$(cat ${KEY_PATH}.pub)' ~/.ssh/authorized_keys 2>/dev/null || echo '$(cat ${KEY_PATH}.pub)' >> ~/.ssh/authorized_keys; chmod 600 ~/.ssh/authorized_keys" 2>/dev/null
+
+    local SSH_CMD="ssh -o StrictHostKeyChecking=no -i $KEY_PATH ${SSH_USER}@${REMOTE_IP}"
+
+    # Install Docker on remote if missing (uses key-based SSH from now on)
+    $SSH_CMD "if ! command -v docker &>/dev/null; then curl -fsSL https://get.docker.com | sh; sudo usermod -aG docker ${SSH_USER}; newgrp docker || true; fi" 2>&1
+    # Ensure docker compose plugin
+    $SSH_CMD "docker compose version &>/dev/null || (sudo apt install -y docker-compose-plugin 2>/dev/null || true)" 2>&1
+
+    # ── STEP 2: Register / re-register XMPP accounts on local Prosody ──
+    echo -e "\n${YELLOW}[2/5] Registering Jibri XMPP accounts in local Prosody...${NC}"
+    if docker ps --format "{{.Names}}" 2>/dev/null | grep -q "jitsi-prosody"; then
+      docker exec jitsi-prosody prosodyctl --config /config/prosody.cfg.lua register \
+        jibri auth.meet.jitsi "$JIBRI_PASS" 2>&1 || true
+      docker exec jitsi-prosody prosodyctl --config /config/prosody.cfg.lua register \
+        recorder hidden.meet.jitsi "$RECORDER_PASS" 2>&1 || true
+      echo -e "  ${GREEN}✓ Jibri XMPP accounts ensured${NC}"
+    else
+      echo -e "  ${YELLOW}⚠ Prosody container not running — skip registration${NC}"
+    fi
+
+    # ── STEP 3: Create remote directories ──
+    echo -e "\n${YELLOW}[3/5] Creating directories on remote server...${NC}"
+    $SSH_CMD "mkdir -p /opt/jitsi-jibri/{recordings,config}" 2>&1
 
     local count
     count=$(grep -E "^JIBRI_COUNT=" .env 2>/dev/null | cut -d= -f2-)
     count="${count:-3}"
 
-    echo -e "\n${YELLOW}[3/4] Generating and copying configuration...${NC}"
+    # ── STEP 4: Generate + copy configuration ──
+    echo -e "\n${YELLOW}[4/5] Generating and copying configuration...${NC}"
+
+    # Build remote docker-compose.yml — uses an outer quoted heredoc for the
+    # fixed header and an unquoted heredoc for the loop so `${i}` expands.
     local REMOTE_COMPOSE="/tmp/docker-compose.jibri-remote.yml"
-    cat > "$REMOTE_COMPOSE" << 'COMPOSE'
+    cat > "$REMOTE_COMPOSE" <<'COMPOSE'
 services:
 COMPOSE
     for i in $(seq 1 "$count"); do
+      # NOTE: heredoc is UNQUOTED below so ${i} expands. Use \$ for literal $.
       cat >> "$REMOTE_COMPOSE" << EOS
   jibri-${i}:
     image: jitsi/jibri:\${JITSI_IMAGE_VERSION:-unstable}
@@ -1041,31 +1105,67 @@ COMPOSE
       - SYS_ADMIN
     env_file: .env.jibri
     volumes:
-      - ./config/jibri-\${i}:/config
+      - ./config/jibri-${i}:/config
       - ./recordings:/recordings
     environment:
       - JIBRI_INSTANCE_ID=${i}
+      # network: host so Jibri reaches main server XMPP directly
     network_mode: host
 EOS
     done
 
+    # Patch .env.jibri for remote — XMPP_SERVER → main server IP,
+    # PUBLIC_URL → main server's URL
     local REMOTE_ENV="/tmp/.env.jibri.remote.$$"
     cp .env.jibri "$REMOTE_ENV"
     sed -i "s/^XMPP_SERVER=.*/XMPP_SERVER=${MAIN_IP}/" "$REMOTE_ENV"
     local pub_url
     pub_url=$(grep -E "^PUBLIC_URL=" .env 2>/dev/null | cut -d= -f2-)
-    if [ -n "$pub_url" ] && grep -q "^PUBLIC_URL=" "$REMOTE_ENV" 2>/dev/null; then
-      sed -i "s|^PUBLIC_URL=.*|PUBLIC_URL=${pub_url}|" "$REMOTE_ENV"
+    if [ -n "$pub_url" ]; then
+      if grep -q "^PUBLIC_URL=" "$REMOTE_ENV" 2>/dev/null; then
+        sed -i "s|^PUBLIC_URL=.*|PUBLIC_URL=${pub_url}|" "$REMOTE_ENV"
+      else
+        echo "PUBLIC_URL=${pub_url}" >> "$REMOTE_ENV"
+      fi
     fi
+    # Ensure no finalize-script is set (recording retention)
+    sed -i '/^JIBRI_FINALIZE_RECORDING_SCRIPT_PATH=/d' "$REMOTE_ENV"
 
-    sshpass -p "$SSH_PASS" scp -o StrictHostKeyChecking=no "$REMOTE_COMPOSE" "${SSH_USER}@${REMOTE_IP}:/opt/jitsi-jibri/docker-compose.yml" 2>&1
-    sshpass -p "$SSH_PASS" scp -o StrictHostKeyChecking=no "$REMOTE_ENV" "${SSH_USER}@${REMOTE_IP}:/opt/jitsi-jibri/.env.jibri" 2>&1
+    # SCP files to remote
+    $SSH_CMD "mkdir -p /opt/jitsi-jibri/config" 2>&1
+    scp -o StrictHostKeyChecking=no -i "$KEY_PATH" "$REMOTE_COMPOSE" \
+      "${SSH_USER}@${REMOTE_IP}:/opt/jitsi-jibri/docker-compose.yml" 2>&1
+    scp -o StrictHostKeyChecking=no -i "$KEY_PATH" "$REMOTE_ENV" \
+      "${SSH_USER}@${REMOTE_IP}:/opt/jitsi-jibri/.env.jibri" 2>&1
     rm -f "$REMOTE_COMPOSE" "$REMOTE_ENV"
 
-    echo -e "\n${YELLOW}[4/4] Starting Jibri containers on remote server...${NC}"
-    sshpass -p "$SSH_PASS" ssh -o StrictHostKeyChecking=no "${SSH_USER}@${REMOTE_IP}" \
-      "cd /opt/jitsi-jibri && for i in \$(seq 1 ${count}); do mkdir -p config/jibri-\$i; done && docker compose up -d && echo '' && docker compose ps --format 'table {{.Names}}\t{{.Status}}'" 2>&1
+    # ── STEP 5: Start Jibri containers on remote + health check ──
+    echo -e "\n${YELLOW}[5/5] Starting & verifying Jibri containers on remote server...${NC}"
+    $SSH_CMD "cd /opt/jitsi-jibri && \
+      for i in \$(seq 1 ${count}); do mkdir -p config/jibri-\$i; done && \
+      docker compose up -d 2>&1; \
+      echo ''; \
+      docker compose ps --format 'table {{.Names}}\t{{.Status}}'" 2>&1
 
+    # ── Health check: wait & verify MUC join ──
+    echo -e "\n${YELLOW}Verifying Jibri brewery connection (30s wait)...${NC}"
+    sleep 15
+    local JOINED=0
+    for c in $(docker ps --filter "name=jibri" --format "{{.Names}}" 2>/dev/null); do
+      if docker logs --tail 50 "$c" 2>&1 | grep -q "Joined MUC: jibribrewery"; then
+        JOINED=$((JOINED + 1))
+      fi
+    done
+    if [ "$JOINED" -gt 0 ]; then
+      echo -e "  ${GREEN}✓ $JOINED remote Jibri instance(s) joined the brewery${NC}"
+    else
+      echo -e "  ${YELLOW}⚠ No Jibri instances seen in brewery yet.${NC}"
+      echo -e "  This is normal if the remote server takes time to connect."
+      echo -e "  Check network: remote must reach ${CYAN}${MAIN_IP}:5222${NC}"
+      echo -e "  Then run ${CYAN}option 8 (Debug)${NC} to verify."
+    fi
+
+    # Save remote server info to .env
     if grep -q "^JIBRI_REMOTE_SERVER=" .env 2>/dev/null; then
       sed -i "s/^JIBRI_REMOTE_SERVER=.*/JIBRI_REMOTE_SERVER=${REMOTE_IP}/" .env
     else
@@ -1073,17 +1173,25 @@ EOS
     fi
 
     echo ""
-    echo -e "${GREEN}✓ Remote Jibri setup complete!${NC}"
+    echo -e "${GREEN}════════════════════════════════════════${NC}"
+    echo -e "${GREEN}  Remote Jibri setup complete!${NC}"
+    echo -e "${GREEN}════════════════════════════════════════${NC}"
     echo ""
-    echo -e "  ${YELLOW}IMPORTANT:${NC}"
-    echo -e "  Make sure the remote server (${REMOTE_IP}) can reach:"
-    echo -e "    - ${CYAN}${MAIN_IP}:5222${NC}  (XMPP c2s — Prosody)"
-    echo -e "    - ${CYAN}${pub_url}${NC}  (Jitsi web)"
+    echo -e "  ${YELLOW}Recordings are preserved in:${NC}"
+    echo -e "    ${CYAN}/opt/jitsi-jibri/recordings/ (remote)${NC}"
+    echo -e "    ${CYAN}./recordings/ (local reference)${NC}"
     echo ""
-    echo -e "  ${YELLOW}Remote Jibri will appear in Jicofo\'s brewery after connection.${NC}"
-    echo -e "  Use ${CYAN}option 7 (Debug)${NC} to verify they joined the MUC."
+    echo -e "  ${YELLOW}Access:${NC}"
+    echo -e "    ssh ${SSH_USER}@${REMOTE_IP} -i ${KEY_PATH}"
+    echo -e "    cd /opt/jitsi-jibri && docker compose ps"
     echo ""
+    echo -e "  ${YELLOW}Firewall:${NC} remote server must be able to reach:"
+    echo -e "    ${CYAN}${MAIN_IP}:5222${NC}  (XMPP c2s — Prosody)"
+    echo -e "    ${CYAN}${pub_url}${NC}  (Jitsi Meet web)"
+    echo ""
+
   else
+    # ── LOCAL MODE ──
     echo -e "\n${YELLOW}Using local Jibri...${NC}"
     local count
     count=$(grep -E "^JIBRI_COUNT=" .env 2>/dev/null | cut -d= -f2-)
@@ -1262,6 +1370,201 @@ switch_recording_backend() {
   read -rp "Press Enter..."
 }
 
+# ── Authentication & User Management ──
+setup_auth() {
+  local mode
+  mode=$(detect_mode)
+  if [ "$mode" = "none" ]; then
+    echo -e "${RED}Configure Jitsi first (option 1).${NC}"
+    read -rp "Press Enter..."
+    return
+  fi
+
+  while true; do
+    clear 2>/dev/null || true
+    local auth_status
+    auth_status=$(grep -E "^ENABLE_AUTH=" .env 2>/dev/null | cut -d= -f2-)
+    local auth_type
+    auth_type=$(grep -E "^AUTH_TYPE=" .env 2>/dev/null | cut -d= -f2-)
+    local guests
+    guests=$(grep -E "^ENABLE_GUESTS=" .env 2>/dev/null | cut -d= -f2-)
+    local admins
+    admins=$(grep -E "^PROSODY_ADMINS=" .env 2>/dev/null | cut -d= -f2-)
+
+    echo -e "\\n${CYAN}── Authentication & User Management ──${NC}\\n"
+    echo -e "  Auth:     $( [ "$auth_status" = "1" ] && echo -e "${GREEN}ON${NC}" || echo -e "${RED}OFF${NC}" )"
+    echo -e "  Type:     ${CYAN}${auth_type:-internal}${NC}"
+    echo -e "  Guests:   $( [ "$guests" = "1" ] && echo -e "${GREEN}enabled${NC}" || echo -e "${YELLOW}disabled${NC}" )"
+    echo -e "  Admins:   ${CYAN}${admins:-<none>}${NC}"
+    echo ""
+    echo "  1) Enable Authentication (internal)"
+    echo "  2) Disable Authentication"
+    echo "  3) Toggle Guest Access (lobby)"
+    echo "  4) Set Admin Users"
+    echo "  5) Manage Users (add / list / remove Prosody accounts)"
+    echo "  6) Back"
+    echo ""
+    read -rp "Choice [1-6]: " ac
+
+    case "$ac" in
+    1)
+      echo -e "\\n${GREEN}=== Enable Authentication ===${NC}\\n"
+      echo "Select auth type:"
+      echo "  1) internal  — Prosody accounts (username/password)"
+      echo "  2) jwt       — JWT token-based auth"
+      echo "  3) ldap      — LDAP directory auth"
+      read -rp "Choice [1/2/3]: " at
+      case "$at" in
+        1) local auth_choice="internal" ;;
+        2) local auth_choice="jwt" ;;
+        3) local auth_choice="ldap" ;;
+        *) local auth_choice="internal" ;;
+      esac
+
+      grep -q "^ENABLE_AUTH=" .env && sed -i "s/^ENABLE_AUTH=.*/ENABLE_AUTH=1/" .env || echo "ENABLE_AUTH=1" >>.env
+      grep -q "^AUTH_TYPE=" .env && sed -i "s/^AUTH_TYPE=.*/AUTH_TYPE=${auth_choice}/" .env || echo "AUTH_TYPE=${auth_choice}" >>.env
+
+      if [ "$auth_choice" = "ldap" ]; then
+        echo -e "\\n${YELLOW}LDAP Configuration${NC}"
+        read -rp "LDAP URL (e.g. ldaps://ldap.domain.com): " ldap_url
+        read -rp "LDAP Base DN (e.g. DC=example,DC=com): " ldap_base
+        read -rp "LDAP Bind DN (empty for anonymous): " ldap_binddn
+        local ldap_pass=""
+        [ -n "$ldap_binddn" ] && read -rsp "LDAP Bind Password: " ldap_pass && echo ""
+        grep -q "^LDAP_URL=" .env && sed -i "s|^LDAP_URL=.*|LDAP_URL=${ldap_url}|" .env || echo "LDAP_URL=${ldap_url}" >>.env
+        [ -n "$ldap_base" ] && (grep -q "^LDAP_BASE=" .env && sed -i "s|^LDAP_BASE=.*|LDAP_BASE=${ldap_base}|" .env || echo "LDAP_BASE=${ldap_base}" >>.env)
+        [ -n "$ldap_binddn" ] && (grep -q "^LDAP_BINDDN=" .env && sed -i "s|^LDAP_BINDDN=.*|LDAP_BINDDN=${ldap_binddn}|" .env || echo "LDAP_BINDDN=${ldap_binddn}" >>.env)
+        [ -n "$ldap_pass" ] && (grep -q "^LDAP_BINDPW=" .env && sed -i "s|^LDAP_BINDPW=.*|LDAP_BINDPW=${ldap_pass}|" .env || echo "LDAP_BINDPW=${ldap_pass}" >>.env)
+      fi
+
+      if [ "$auth_choice" = "jwt" ]; then
+        echo -e "\\n${YELLOW}JWT Configuration${NC}"
+        read -rp "JWT App ID: " jwt_app_id
+        read -rp "JWT App Secret: " jwt_app_secret
+        grep -q "^JWT_APP_ID=" .env && sed -i "s|^JWT_APP_ID=.*|JWT_APP_ID=${jwt_app_id}|" .env || echo "JWT_APP_ID=${jwt_app_id}" >>.env
+        grep -q "^JWT_APP_SECRET=" .env && sed -i "s|^JWT_APP_SECRET=.*|JWT_APP_SECRET=${jwt_app_secret}|" .env || echo "JWT_APP_SECRET=${jwt_app_secret}" >>.env
+      fi
+
+      echo -e "\\n${YELLOW}Restarting Prosody to apply auth changes...${NC}"
+      cd "$SCRIPT_DIR" && docker compose up -d --force-recreate prosody 2>&1 | tail -1
+      sleep 3
+
+      if [ "$auth_choice" = "internal" ]; then
+        echo -e "\\n${GREEN}Authentication enabled (internal).${NC}"
+        echo "Now create users with option 5 'Manage Users'."
+      else
+        echo -e "\\n${GREEN}Authentication enabled (${auth_choice}).${NC}"
+      fi
+      read -rp "Press Enter..."
+      ;;
+
+    2)
+      echo -e "\\n${YELLOW}=== Disable Authentication ===${NC}"
+      grep -q "^ENABLE_AUTH=" .env && sed -i 's/^ENABLE_AUTH=.*/ENABLE_AUTH=0/' .env || echo "ENABLE_AUTH=0" >>.env
+      echo -e "\\n${YELLOW}Restarting Prosody...${NC}"
+      cd "$SCRIPT_DIR" && docker compose up -d --force-recreate prosody 2>&1 | tail -1
+      sleep 2
+      echo -e "${GREEN}Authentication disabled. Anyone can join without login.${NC}"
+      read -rp "Press Enter..."
+      ;;
+
+    3)
+      local current_guests
+      current_guests=$(grep -E "^ENABLE_GUESTS=" .env 2>/dev/null | cut -d= -f2-)
+      if [ "$current_guests" = "1" ]; then
+        grep -q "^ENABLE_GUESTS=" .env && sed -i 's/^ENABLE_GUESTS=.*/ENABLE_GUESTS=0/' .env || echo "ENABLE_GUESTS=0" >>.env
+        echo -e "${YELLOW}Guest access disabled.${NC}"
+      else
+        grep -q "^ENABLE_GUESTS=" .env && sed -i 's/^ENABLE_GUESTS=.*/ENABLE_GUESTS=1/' .env || echo "ENABLE_GUESTS=1" >>.env
+        echo -e "${GREEN}Guest access enabled. Users without login will wait in lobby.${NC}"
+      fi
+      cd "$SCRIPT_DIR" && docker compose up -d --force-recreate prosody 2>&1 | tail -1
+      read -rp "Press Enter..."
+      ;;
+
+    4)
+      echo -e "\\n${CYAN}Current admins: ${admins:-<none>}${NC}\\n"
+      echo "Enter admin users as comma-separated JIDs (e.g. user1@auth.meet.jitsi,user2@auth.meet.jitsi)"
+      echo "Leave empty to clear."
+      read -rp "Admins: " new_admins
+      if [ -z "$new_admins" ]; then
+        grep -q "^PROSODY_ADMINS=" .env && sed -i '/^PROSODY_ADMINS=/d' .env
+        echo -e "${YELLOW}Admins cleared.${NC}"
+      else
+        grep -q "^PROSODY_ADMINS=" .env && sed -i "s|^PROSODY_ADMINS=.*|PROSODY_ADMINS=${new_admins}|" .env || echo "PROSODY_ADMINS=${new_admins}" >>.env
+        echo -e "${GREEN}Admins set: ${new_admins}${NC}"
+      fi
+      cd "$SCRIPT_DIR" && docker compose up -d --force-recreate prosody 2>&1 | tail -1
+      read -rp "Press Enter..."
+      ;;
+
+    5)
+      while true; do
+        echo -e "\\n${CYAN}── User Management ──${NC}\\n"
+        echo "  1) List Users"
+        echo "  2) Add User"
+        echo "  3) Delete User"
+        echo "  4) Back"
+        echo ""
+        read -rp "Choice [1-4]: " uc
+        case "$uc" in
+        1)
+          echo -e "\\n${YELLOW}Listing Prosody users...${NC}"
+          docker exec jitsi-prosody prosodyctl --config /config/prosody.cfg.lua list 2>/dev/null || \
+            echo -e "${RED}No users found or Prosody not running.${NC}"
+          echo ""
+          read -rp "Press Enter..."
+          ;;
+        2)
+          echo -e "\\n${YELLOW}Add a new user${NC}"
+          read -rp "Username: " new_user
+          [ -z "$new_user" ] && echo -e "${RED}Cancelled.${NC}" && continue
+          read -rsp "Password: " new_pass
+          echo ""
+          [ -z "$new_pass" ] && echo -e "${RED}Password required.${NC}" && continue
+
+          local auth_domain
+          auth_domain=$(grep -E "^AUTH_TYPE=" .env | cut -d= -f2-)
+          auth_domain="${auth_domain:-internal}"
+          # Try registering on the auth domain, then the main domain
+          if docker exec jitsi-prosody prosodyctl --config /config/prosody.cfg.lua register "${new_user}" auth.meet.jitsi "${new_pass}" 2>&1; then
+            echo -e "${GREEN}User ${new_user}@auth.meet.jitsi created.${NC}"
+          else
+            echo -e "${YELLOW}Trying alternate domain...${NC}"
+            docker exec jitsi-prosody prosodyctl --config /config/prosody.cfg.lua register "${new_user}" meet.jitsi "${new_pass}" 2>&1 && \
+              echo -e "${GREEN}User ${new_user}@meet.jitsi created.${NC}" || \
+              echo -e "${RED}Failed. Is Prosody running and auth enabled?${NC}"
+          fi
+          echo ""
+          read -rp "Press Enter..."
+          ;;
+        3)
+          echo -e "\\n${YELLOW}Delete a user${NC}"
+          read -rp "Full JID (e.g. user@auth.meet.jitsi): " del_user
+          [ -z "$del_user" ] && echo -e "${RED}Cancelled.${NC}" && continue
+          local del_uname del_domain
+          del_uname=$(echo "$del_user" | cut -d@ -f1)
+          del_domain=$(echo "$del_user" | cut -d@ -f2)
+          if docker exec jitsi-prosody prosodyctl --config /config/prosody.cfg.lua deluser "${del_user}" 2>&1; then
+            echo -e "${GREEN}User ${del_user} deleted.${NC}"
+          else
+            echo -e "${RED}Failed to delete. Try the full JID format.${NC}"
+          fi
+          echo ""
+          read -rp "Press Enter..."
+          ;;
+        4) break ;;
+        *) echo -e "${RED}Invalid.${NC}" ; sleep 1 ;;
+        esac
+      done
+      ;;
+
+    6) return ;;
+    *) echo -e "${RED}Invalid.${NC}" ; sleep 1 ;;
+    esac
+  done
+}
+
 # ── Main Menu ──
 main_menu() {
   while true; do
@@ -1286,9 +1589,10 @@ main_menu() {
     echo "  8) Debug & Self-Heal"
     echo "  9) VOD Platform Management"
     echo "  10) Switch Record Backend (Jibri ↔ Jirecon)"
-    echo "  11) Exit"
+    echo "  11) Authentication & User Management"
+    echo "  12) Exit"
     echo ""
-    read -rp "Choice [1-11]: " CHOICE
+    read -rp "Choice [1-12]: " CHOICE
     case "$CHOICE" in
     1) setup_jitsi ;;
     2)
@@ -1342,7 +1646,8 @@ main_menu() {
     8) debug_system ;;
     9) manage_vod ;;
     10) switch_recording_backend ;;
-    11)
+    11) setup_auth ;;
+    12)
       echo "Goodbye."
       exit 0
       ;;
